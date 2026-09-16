@@ -308,6 +308,36 @@ func eye_position() -> Vector3:
 	return controller.state.position + Vector3(0.0, EYE_HEIGHT, 0.0)
 
 
+## The duck-typed component lookup dot-weapon's player bridge asks a carrier for.
+##
+## [b]Without this, every shot in the showdown left the player's FEET pointing due
+## north.[/b] [DotWeaponPlayerBridge] takes a shot's origin and aim from an eye transform,
+## and it looks for one in three places in order: a controller switch, a
+## `DotPlayerController`, then a `DotPlayerChar`. Each of those is reached through
+## `player.component(name)` — and a player with no `component` method fails all three and
+## falls back to the BODY transform, which in this game is the right position and an
+## identity basis, because the yaw lives in the controller's state and never in the node.
+##
+## A shot with the right origin and a fixed direction is the worst of the three outcomes: it
+## is not obviously broken from any single number, it survives every check that a weapon
+## fires, and what a player sees is a gun that works and never hits anything.
+##
+## [b]`DotFpsController` as well as `DotPlayerController`, because a name is not a
+## hierarchy.[/b] The bridge asks for the base and this game holds the first-person
+## subclass; matching only the exact string is how a seam like this quietly stops working
+## when somebody swaps a controller for a more specific one.
+func component(type_name: StringName) -> Object:
+	match String(type_name):
+		"DotPlayerController", "DotFpsController":
+			return controller
+		"DotHealth":
+			return health
+		"ZeeWeaponRig":
+			return weapons
+		_:
+			return null
+
+
 ## Which way they are looking, as a unit vector.
 ##
 ## Built from yaw and pitch rather than read off a camera, because a server has no camera,

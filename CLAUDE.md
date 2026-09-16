@@ -43,7 +43,7 @@ assets/kenney/      eight CC0 models and two atlases
 assets/{blaster-kit,melee,arms}/  the weapon pack's own art, vendored
 textures/prototype/ six CC0 prototype textures, one per role
 scenes/             sc_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (106), dedicated (43), headless_net (134)
+examples/           headless_run (113), dedicated (43), headless_net (134)
 tools/              shot.gd/.tscn/.sh — render a frame and look at it
 ```
 
@@ -119,7 +119,7 @@ Every one of these was found by running the game or by looking at a picture of i
 
 ## What DELIVERING it found
 
-These are separate from the list above because none of them can happen until the game is a pack: three suites, five renders and 280 checks all pass on a game that will not run when it is mounted. Publishing it and booting a server is its own step, and rendering the delivered map is another; between them they found six things.
+These are separate from the list above because none of them can happen until the game is a pack: three suites, five renders and 280 checks all pass on a game that will not run when it is mounted. Publishing it and booting a server is its own step, rendering the delivered map is another, and running stand-ins against each other for twenty rounds is a third; between them they found nine things, including one that made the whole second half of the game not work.
 
 - **Every path the publisher had already rewritten was rebased a second time.** `ScPropBody` loads its model from an exported `model_path`, and a publisher rewrites every `res://` string inside a `.tscn` onto the mount prefix — so the value arrives absolute and `rebase()` prefixed it again, producing `res://dot_cloud/tmc/smash/0.1.0/dot_cloud/tmc/smash/0.1.0/assets/kenney/car/debris-tire.glb`. It is long enough that the doubling reads as noise. This is the seventh form of the family's one delivery bug and it is written up in dot-server-deploy's own notes; `rebase()` returns a path already under the root unchanged.
 
@@ -132,6 +132,16 @@ These are separate from the list above because none of them can happen until the
 - **The showdown's pads had no edge, and `_pad` said in its own name that they did.** A render of the corners from a player's height showed three flat shapes against a flat sky with nothing to mark where any of them stopped — the same readability problem the platforms had, on the half of the map where being wrong is permanent. `CORNER_LIP` had a doc comment explaining why the lip is low and is not cover, `_pad` was described as "one flat surface with a kerb around it", and no line anywhere built one. A value documented in two places and produced nowhere is as invisible to a suite as one produced and consumed by nothing.
 
   The catwalks get the band on their two LONG sides only. A kerb across the short ends is a third of a metre of step at the junction a player is running through, and a body catching on it would have read as the movement code being wrong.
+
+- **Nobody could shoot anybody, and 280 checks said the weapons worked.** Every shot in the showdown left the world origin pointing due north, whatever the player was doing, because `ZeeWeaponRig` resolved its carrier inside `_resolve_presentation()` — behind that function's `role == SERVER` early return. The view model and the world model belong there; the player does not, because it is where the muzzle position and the aim direction come from. Fixed in zee-dot-weapons, where it affected every server using the pack.
+
+  The half of it that was this game's: `ScPlayer` had no `component()` method, so `DotWeaponPlayerBridge` failed all three of its lookups and fell back to the body transform — the right position and an identity basis, because the yaw lives in the controller's state and never in the node. So even with the carrier resolved, every shot left the player's feet pointing north. `component()` is four lines and is the seam the bridge documents.
+
+  **And friendly fire was on in a game whose rules say it is off.** `DotDamageResolver._same_team` takes a `team_of` [Callable] and returns false when it has none, which is right for a free-for-all and silently wrong for every team game that forgets it. The rule was evaluated, the answer was "not team mates", and the shot landed. There is no number anywhere that is wrong.
+
+- **A bot showdown produced the same winner every round, twelve times out of twelve.** The corners are symmetric, the arrival slots are symmetric and the bot brain has no state, so a fight between stand-ins was a pure function of an arrangement that the round seed does not change — and the same bot took the only kill in every round. An empty server filling itself with stand-ins is this game's normal state, so that is what most people would have seen first.
+
+  The fix is one drawn value: an aim error per bot per round, from the game's own reproducible stream. **The first version of it did nothing at all**, because it drew on the entity id alone and an entity id is the same every round — twelve rounds came out byte-identical to twelve rounds with no jitter. `stream_for` was doing exactly what it promises; what was missing was anything that varied. The round number is mixed into the subject now.
 
 - **dot-match warned once per player per round, for ever.** `_begin_round` enqueues everybody and drains the queue regardless of `respawn_disabled`, so this game — which places its own players and deliberately has no `DotSpawnPoint` anywhere — got "no usable spawn point at all" four times at every round start. Fixed in dot-match rather than here: `choose_spawn` returns null when there are no points at all, because an empty list is a game that computes its own positions and `refresh_spawns` has already warned once if that was an accident. The selector's warning still fires for its real meaning, which is that it was given points and could not use one.
 
@@ -187,7 +197,7 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 14 sections, 106 checks
+godot --headless --path . res://examples/headless_run.tscn   # 15 sections, 113 checks
 godot --headless --path . res://examples/dedicated.tscn      # 7 sections, 43 checks
 godot --headless --path . res://examples/headless_net.tscn   # 14 sections, 134 checks
 tools/shot.sh --view=field

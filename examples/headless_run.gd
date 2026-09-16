@@ -30,7 +30,7 @@ const ScSpecials := preload("../game/sc_specials.gd")
 ## `set_physics_process(false)` goes on first and every section advances the world itself.
 
 ## Sections entered, against sections that ran to their last line.
-const SECTIONS := 14
+const SECTIONS := 15
 
 ## And the total this counter cannot be.
 ##
@@ -38,7 +38,7 @@ const SECTIONS := 14
 ## checks that already ran still print ok, the ones after it never happen, and the section
 ## counter is satisfied because the section announced itself on the way in. dot-settings
 ## reported "8 sections, 63 passed, 0 failed" and exited 0 with eight checks missing.
-const CHECKS := 106
+const CHECKS := 113
 
 const TICK_RATE := 64
 const TICK := 1.0 / float(TICK_RATE)
@@ -75,6 +75,7 @@ func _run() -> void:
 	await _test_falling_off()
 	await _test_the_round()
 	await _test_specials()
+	await _test_a_shot_lands()
 	await _test_the_chopper()
 
 	for world in _worlds.duplicate():
@@ -756,6 +757,129 @@ func _test_specials() -> void:
 	_check(player.controller.tunables.gravity < before, "a player's own gravity comes down",
 		"%.1f from %.1f" % [player.controller.tunables.gravity, before])
 	_check(player.controller.tunables.max_speed > 0.0, "and they can still move")
+
+	await _dispose(game)
+	_finished()
+
+
+## [b]The half of this game that is a gunfight, asserted for the first time.[/b]
+##
+## Everything else here checks that a weapon EXISTS: that a survivor is holding one, that
+## the fire counter goes up, that hitboxes are registered, that a health record is kept. The
+## round test kills its loser by assigning `health = 0.0`. So every check in this repository
+## passed on a showdown in which no shot had ever reduced anybody's health, and there was no
+## way to tell from the inside.
+##
+## What made it visible was running bots against each other for twenty rounds: every round
+## ended with exactly two alive and a draw, which is one survivor per side, every time. A
+## number that is the same every round is a number nothing is deciding.
+##
+## So this is the whole chain in one check — a command's button, the arsenal's tick, the
+## shot it emits, the trace against the world, the hitbox it finds, the damage rules, and
+## the health record — and it is the only check here that fails if any link in it breaks.
+func _test_a_shot_lands() -> void:
+	_section("a shot finds a player")
+
+	var game := await _world(func(c: ScConfig) -> void:
+		c.survival_seconds = 2.0
+		c.showdown_warmup_seconds = 0.5
+		c.showdown_seconds = 60.0
+		c.warmup_seconds = 0.0
+		c.cannon_enabled = false
+	)
+
+	var shooter := game.add_player(&"shooter", "Shooter", 1)
+	var target := game.add_player(&"target", "Target", 2)
+	game.start()
+
+	await _step(game, int(3.0 * TICK_RATE))
+
+	var hot := game.phase == ScGame.Phase.SHOWDOWN
+	_check(hot, "the showdown is running", ScGame.Phase.keys()[game.phase])
+
+	if not hot:
+		# Deliberately NOT returning early: a section that stops adding checks is a section
+		# the CHECKS total reports as a hole rather than as a failure, and a hole reads like
+		# somebody edited the file. Everything below fails honestly instead.
+		pass
+
+	_check(shooter.weapons != null and target.weapons != null, "both are armed")
+	_check(not target.health.invulnerable, "and the target can be hurt")
+
+	# Face to face at eight metres, on the shooter's own pad, so the trace has the pad under
+	# it and nothing else between them. Placed rather than walked: this check is about the
+	# shot, and a bot that fell off on the way would fail it for the wrong reason.
+	var stand := shooter.controller.state.position
+	var toward := game.arena.showdown_centre() - stand
+	toward.y = 0.0
+	toward = toward.normalized()
+
+	shooter.place_at(stand, rad_to_deg(atan2(-toward.x, -toward.z)))
+	target.place_at(stand + toward * 8.0, rad_to_deg(atan2(toward.x, toward.z)))
+
+	await _step(game, 4)
+
+	var before := target.health.health
+	_check(before > 0.0, "the target starts alive", "%.0f hp" % before)
+
+	# Aimed at the chest rather than along the floor: a trace from an eye to a point eight
+	# metres away at the same height passes through a standing capsule, and one aimed at the
+	# feet does not.
+	var eye := shooter.eye_position()
+	var at := target.eye_position()
+	var line := (at - eye).normalized()
+
+	var fired := 0
+
+	for _i in range(int(1.5 * TICK_RATE)):
+		var command := DotFpsCommand.new()
+		command.yaw = rad_to_deg(atan2(-line.x, -line.z))
+		command.pitch = clampf(rad_to_deg(asin(clampf(line.y, -1.0, 1.0))), -89.0, 89.0)
+		command.set_button(DotFpsCommand.BUTTON_USER_0, true)
+		shooter.controller.apply_command(command)
+
+		fired = maxi(fired, shooter.weapons.fire_seq)
+		game.simulate(TICK)
+		await _physics_frame()
+
+		if target.health.health < before:
+			break
+
+	_check(shooter.weapons.fire_seq > 0, "the weapon fires",
+		"%d uses" % shooter.weapons.fire_seq)
+	_check(
+		target.health.health < before,
+		"and the target takes damage",
+		"%.0f -> %.0f hp after %d uses"
+			% [before, target.health.health, shooter.weapons.fire_seq]
+	)
+
+	# [b]The other half of the rule, and the one a game gets wrong quietly.[/b] Friendly fire
+	# is off, so a shot down the same line at a team mate has to find nothing to do. A game
+	# that resolved it anyway would play correctly right up until two people on one side
+	# stood in front of each other.
+	var mate := game.add_player(&"mate", "Mate", 1)
+	mate.place_at(stand + toward * 8.0, rad_to_deg(atan2(toward.x, toward.z)))
+	target.place_at(stand + toward * 40.0, rad_to_deg(atan2(toward.x, toward.z)))
+
+	await _step(game, 4)
+
+	var mate_before := mate.health.health
+
+	for _i in range(int(1.0 * TICK_RATE)):
+		var command := DotFpsCommand.new()
+		command.yaw = rad_to_deg(atan2(-line.x, -line.z))
+		command.pitch = 0.0
+		command.set_button(DotFpsCommand.BUTTON_USER_0, true)
+		shooter.controller.apply_command(command)
+		game.simulate(TICK)
+		await _physics_frame()
+
+	_check(
+		is_equal_approx(mate.health.health, mate_before),
+		"a team mate in the way takes none",
+		"%.0f -> %.0f hp" % [mate_before, mate.health.health]
+	)
 
 	await _dispose(game)
 	_finished()

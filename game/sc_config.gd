@@ -421,6 +421,33 @@ extends DotConfig
 ## an empty server is instantly, for ever.
 @export_range(0, 24, 1) var minimum_players: int = 4
 
+## How far a stand-in will walk toward the nearest enemy in the showdown, in metres.
+##
+## [b]Two hundred does not bind, and that is deliberate.[/b] The corners are about a hundred
+## and twenty metres apart, so the default lets a stand-in cross — committing to the catwalk
+## is what the showdown is for, and a bot that would not leave its pad turns the second half
+## into two groups shooting past each other until the clock runs out. Measured at
+## thirty-four: five of six alive at the end of every round.
+##
+## What it is for is the other direction. Two thirds of the deaths in a bot showdown are
+## falls rather than shots, and a server that wants its empty-server stand-ins to look like
+## people holding a position rather than a queue walking off a ledge can bring it down. It
+## is a knob because the right answer depends on how many sides are playing and how far
+## apart their corners are, and both of those are configurable too.
+@export_range(5.0, 400.0, 1.0) var bot_advance_metres: float = 200.0
+
+## How far a stand-in's aim is off, in degrees, drawn once per bot per round.
+##
+## [b]Zero makes an empty server play the same round for ever.[/b] The corners are
+## symmetric, the arrival slots are symmetric and the bot brain has no state, so a showdown
+## between stand-ins is a pure function of an arrangement that the round seed does not
+## change. Measured at zero: twelve rounds, twelve wins for the same side, the same bot
+## taking the only kill in every one.
+##
+## Pitch gets forty percent of it, because a shot that is a little wide still passes a
+## standing body and one that is a little high goes over every time.
+@export_range(0.0, 45.0, 0.5) var bot_aim_spread_degrees: float = 7.0
+
 
 func env_prefix() -> String:
 	return "SC_"

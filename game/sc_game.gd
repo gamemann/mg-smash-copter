@@ -498,6 +498,21 @@ func _build_combat() -> void:
 
 	combat.trace = trace
 
+	# [b]Which side an entity is on, or friendly fire is ON in a game whose rules say it is
+	# off.[/b] [DotDamageResolver._same_team] takes a `team_of` [Callable] and returns false
+	# when it has none — which is the right default for a free-for-all and is silently wrong
+	# for every team game that forgets it. Nothing reports the gap: the rule is evaluated,
+	# the answer is "not team mates", and the shot lands. What a player sees is a team mate
+	# they can kill in a game that says friendly fire is off, and there is no number anywhere
+	# that is wrong.
+	#
+	# By entity id rather than by key, because that is what a damage carries; dot-entity's
+	# reverse index is what makes it one line.
+	combat.resolver = DotDamageResolver.with_rules(rules)
+	combat.resolver.hit_groups = DotHitGroup.defaults()
+	combat.resolver.team_of = func(entity_id: int) -> int:
+		return team_of(entities.key_for_id(entity_id))
+
 	# [b]`add_child` IS the setup.[/b] [DotCombatManager._ready] calls `setup()` itself, so the
 	# explicit call this used to make ran the whole of it a second time — and the tell was in
 	# the delivered server's log, where every message `setup()` emits appeared twice in a row.
@@ -989,6 +1004,11 @@ func _on_round_ended(number: int, winner: int, _outcome: int) -> void:
 func _lay_out_round() -> void:
 	world_clearing.emit()
 	_clear_world()
+
+	# A new round is a new hand for every stand-in. Kept across the round so a bot's aim is
+	# slightly wrong rather than shaking, and dropped here so the next one is a different
+	# fight — which is the whole reason it exists.
+	_bot_hands.clear()
 
 	var stream := random.stream(&"layout")
 	layout = ScLayouts.pick(config, stream)
@@ -1987,6 +2007,10 @@ func try_board(player_id: StringName) -> DotResult:
 ## decision to make and it is the same one a person has: the platform is leaning, so move
 ## toward the high side, and if it is going over, get off it. That is four lines and it is
 ## enough to make an empty server show somebody what the map does.
+## One aim error per bot, for this round. Cleared when the next one is laid out.
+var _bot_hands: Dictionary = {}
+
+
 func _drive_bots(_delta: float) -> void:
 	for id: StringName in players:
 		var player: ScPlayer = players[id]
@@ -2061,12 +2085,59 @@ func _aim_bot(player: ScPlayer, command: DotFpsCommand) -> void:
 	if toward.length() < 0.01:
 		return
 
-	command.yaw = rad_to_deg(atan2(-toward.x, -toward.z))
-	command.pitch = clampf(rad_to_deg(asin(clampf(toward.normalized().y, -1.0, 1.0))), -89.0, 89.0)
+	# [b]A hand of its own, per bot per round, and without it an empty server plays the same
+	# round for ever.[/b] The corners are symmetric, the arrival slots are symmetric, and the
+	# bot brain is four lines with no state — so a showdown between stand-ins is a pure
+	# function of the arrangement, and the arrangement does not change with the round seed.
+	# Measured: twelve rounds, twelve wins for the same side, with the same bot getting the
+	# only kill in every one of them. Nothing was wrong; nothing was deciding, either.
+	#
+	# The stream is the ROUND's, so both halves of a networked world draw the same numbers
+	# and a watching client is not shown a different fight from the one the server is running.
+	var hand := _bot_jitter(player)
+
+	command.yaw = rad_to_deg(atan2(-toward.x, -toward.z)) + hand.x
+	command.pitch = clampf(
+		rad_to_deg(asin(clampf(toward.normalized().y, -1.0, 1.0))) + hand.y, -89.0, 89.0
+	)
 	command.set_button(DotFpsCommand.BUTTON_USER_0, true)
 
-	if closest > 6.0:
+	# [b]Close, but not from the far side of the map.[/b] Advancing whenever the nearest
+	# enemy is further than six metres marched every stand-in off its own pad and down a
+	# catwalk 3.4 m wide toward somebody sixty metres away — which is why two thirds of the
+	# deaths in a bot showdown were falls rather than shots. Past the walk limit a bot holds
+	# its corner and shoots from it, which is also the right thing for a person to do.
+	if closest > 6.0 and closest < config.bot_advance_metres:
 		command.move = Vector2(0.0, 1.0)
+
+
+## A bot's personal aim error, in degrees of yaw and pitch.
+##
+## Drawn once per player per round and cached, because a value redrawn every tick is a bot
+## whose aim shakes rather than one that is slightly wrong — and a shaking bot hits nothing
+## at all, which is the same broken showdown from the other end.
+func _bot_jitter(player: ScPlayer) -> Vector2:
+	var found: Variant = _bot_hands.get(player.player_id)
+
+	if found != null:
+		return found as Vector2
+
+	# [b]The ROUND is mixed into the subject, and leaving it out made this line do
+	# nothing.[/b] `stream_for(name, subject)` is reproducible by construction: the same world
+	# seed and the same subject give the same numbers for ever, and an entity id is the same
+	# every round. The first version drew on the id alone, and twelve rounds came out
+	# byte-identical to twelve rounds with no jitter at all — the same winner, the same
+	# survivor, the same bot taking the only kill. Reproducibility was doing exactly what it
+	# promises; what was missing was anything that varied.
+	var draw := random.stream_for(
+		&"bot_aim", round_number * 8192 + int(player.entity_id % 8192)
+	)
+	var spread := config.bot_aim_spread_degrees
+	var hand := Vector2(
+		draw.next_range_f(-spread, spread), draw.next_range_f(-spread * 0.4, spread * 0.4)
+	)
+	_bot_hands[player.player_id] = hand
+	return hand
 
 
 # --- Reacting ---------------------------------------------------------------
