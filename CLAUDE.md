@@ -107,6 +107,8 @@ Every one of these was found by running the game or by looking at a picture of i
 
 - **A lone player could not tip anything.** At a load gain of 1.0 one person standing on the very edge of a platform leans it 1.1 degrees against a collapse angle of sixteen, and one running across it 3.3 — so the walk key did nothing anybody could feel and the first objective was standing still for two minutes. The equilibrium is `offset * kilos * gain / (inertia * stiffness)`, which is four numbers and was never solved until a screenshot made it obvious. At 1.8 a lone runner leans it six degrees and three of them on one edge take it over.
 
+- **A player could not see the edge they were about to walk off.** Every platform is at the same height, so from eye level the neighbouring ones are edge-on — and with under a metre between them the whole field reads as one continuous floor stretching to the horizon. The grid does not help: it is the same grid on both platforms and it runs straight across the join. There is a band in the cannon's colour around every platform now, mesh only, and it is the single largest readability change in the game. The first attempt at it was invisible because the rim was positioned relative to the slab's middle and the pivot is the SURFACE — and the screenshot that was supposed to prove it looked identical to the one before it, which is its own small lesson about what a picture proves.
+
 - **The health number was drawn underneath the chat box.** Both anchor bottom-left. Invisible to every headless assertion, because a headless viewport is 64 × 64 and nothing in one can overlap anything.
 
 ## The netcode

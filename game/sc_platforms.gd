@@ -359,6 +359,8 @@ func _build_deck(column: int, row: int, is_bridge: bool) -> void:
 	mesh.material_override = ScTextures.surface(ScTextures.Role.DECK)
 	body.add_child(mesh)
 
+	_build_rim(body, size)
+
 	_classify(body, &"world")
 	add_child(body)
 	deck.body = body
@@ -371,6 +373,52 @@ func _build_deck(column: int, row: int, is_bridge: bool) -> void:
 
 	decks.append(deck)
 	_by_body[body.get_instance_id()] = decks.size() - 1
+
+
+## A coloured band around a platform's edge, so a player can see where it stops.
+##
+## [b]Found by looking at what a player actually sees, and it is the one readability
+## problem this map has.[/b] Every platform is at the same height, so from eye level the
+## neighbouring ones are edge-on — and with a gap of under a metre between them the whole
+## field reads as one continuous floor stretching to the horizon. A player walking toward
+## what looks like more floor falls down a gap they had no way to see. The grid does not
+## help: it is the same grid on both platforms and it runs straight across the join.
+##
+## A band in the cannon's colour does, because it is the one colour nothing else a player
+## stands on wears, and because an EDGE seen edge-on is still a line. It carries no
+## collider: it is drawn a hair proud of the surface so it cannot become a lip that catches
+## a sliding crate.
+func _build_rim(body: AnimatableBody3D, size: Vector3) -> void:
+	var band := 0.55
+	# [b]A hair ABOVE zero, because the pivot is the SURFACE.[/b] Every offset in this file
+	# is measured on the plane a player stands on and the slab hangs below it, so a rim
+	# placed relative to the slab's middle is a rim inside the slab — which is what the first
+	# one was, and the screenshot that was supposed to prove it looked identical to the one
+	# before it.
+	var lift := 0.005
+	var material := ScTextures.surface(ScTextures.Role.CANNON)
+
+	var edges: Array[Vector3] = [
+		Vector3(0.0, 0.0, size.z * 0.5 - band * 0.5),
+		Vector3(0.0, 0.0, -size.z * 0.5 + band * 0.5),
+		Vector3(size.x * 0.5 - band * 0.5, 0.0, 0.0),
+		Vector3(-size.x * 0.5 + band * 0.5, 0.0, 0.0),
+	]
+
+	for i in range(edges.size()):
+		var along_x := i >= 2
+		var mesh := MeshInstance3D.new()
+		mesh.name = "Rim%d" % i
+		var box := BoxMesh.new()
+		box.size = Vector3(
+			band if along_x else size.x,
+			0.06,
+			size.z if along_x else band
+		)
+		mesh.mesh = box
+		mesh.position = edges[i] + Vector3(0.0, lift, 0.0)
+		mesh.material_override = material
+		body.add_child(mesh)
 
 
 ## The single column, which is the whole reason the platform above it is unstable.
