@@ -82,6 +82,7 @@ sc_motion_gain 3.0          // running matters more
 sc_cannon_interval 1.2      // a busier sky
 sc_cannon_max_tier 2        // nothing that deletes a platform outright
 sc_special_chance 60        // most rounds are strange
+sc_bot_spread 2             // sharper stand-ins
 sc_chopper 0                // no chopper on any layout
 sc_min_players 6            // keep six in the round with stand-ins
 ```
@@ -124,4 +125,5 @@ The map itself is built in code. A grid of squares on pillars, a cylinder in the
 ## What does not work yet
 
 - **Nobody draws somebody else's gun.** The weapon state replicates — the slot, the reload, the switch and a use counter — but hanging a world model on a watcher's copy of a player needs a character with a hand mount, and this game draws players as capsules.
+- **Stand-ins fall off more than they shoot.** Two thirds of the deaths in a showdown played by stand-ins are falls. They are four lines of brain with an aim error, which is enough to make an empty server look alive and is not a bot worth fighting. `sc_bot_advance` and `sc_bot_spread` are the two knobs.
 - **No profiles and no avatars.** dot-game reports the missing identity layer and carries on, which is a server where everybody is a guest.

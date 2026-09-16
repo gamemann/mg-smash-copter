@@ -170,6 +170,15 @@ func _add_tunables(world: ScGame) -> void:
 	_tunable("sc_showdown_seconds", config.showdown_seconds,
 		"Seconds the fight in the corners lasts",
 		func(value: float) -> void: config.showdown_seconds = value)
+	# The two that decide what an EMPTY server looks like, which is most servers most of the
+	# time. Both take effect on the next round, because a bot's hand is drawn when the round
+	# is laid out.
+	_tunable("sc_bot_advance", config.bot_advance_metres,
+		"How far a stand-in walks toward an enemy in the showdown, in metres",
+		func(value: float) -> void: config.bot_advance_metres = clampf(value, 5.0, 400.0))
+	_tunable("sc_bot_spread", config.bot_aim_spread_degrees,
+		"How far a stand-in's aim is off, in degrees, per bot per round",
+		func(value: float) -> void: config.bot_aim_spread_degrees = clampf(value, 0.0, 45.0))
 	_tunable("sc_teams", float(config.team_count), "How many sides play, two to six",
 		func(value: float) -> void: config.team_count = clampi(int(value), 2, 6))
 	_tunable("sc_columns", float(config.columns), "Platforms along each row, next round",
