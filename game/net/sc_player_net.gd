@@ -22,6 +22,10 @@ const ScPlayer := preload("../sc_player.gd")
 ## game follows: a per-tick property for what changes per tick, an event for what changes on
 ## a decision.
 
+## Somebody this client is watching used their weapon, [param times] times since the last
+## snapshot. What a game draws a muzzle flash from.
+signal weapon_used(times: int, kind: int)
+
 var player: ScPlayer = null
 var bridge: Node = null
 
@@ -43,6 +47,31 @@ var net_health: float = 100.0
 
 ## Whether they are in a chopper.
 var net_riding: bool = false
+
+# --- The weapons, which only exist in the second half of a round ------------
+#
+# [b]Seven fields, and the pack's own `all_specs()` names all of them.[/b] GDScript has no
+# dynamic properties, so a spec table that says what to send needs a variable per entry
+# declared by hand — and the one call a game should make is `ZeeWeaponNet.all_specs()`,
+# because concatenating dot-weapon's three with the pack's four by hand is the same work
+# and one more place to forget the second half. Forgetting it presents as weapons that are
+# silent for everybody except the person holding them, which is what game-playground
+# shipped.
+#
+# The magazine and the reserve are `owner_only`: exact ammunition is information an opponent
+# should not have, and dot-combat makes the same decision about the same two numbers.
+
+var net_slot: int = 0
+var net_magazine: int = 0
+var net_reserve: int = 0
+var net_fire_seq: int = 0
+var net_fire_kind: int = 0
+var net_reloading: bool = false
+var net_switching: bool = false
+
+## What this watcher last saw of that counter, so a wrap is read as uses rather than as a
+## negative. One integer per watched player, which is what lets `ZeeWeaponNet` keep none.
+var _seen_fire_seq: int = 0
 
 ## Retained, not cleared: a player whose packet was lost keeps moving in a straight line
 ## rather than stopping dead. The controller says the same of its own command.
@@ -70,6 +99,18 @@ func _register_net_vars() -> void:
 
 	replicate(&"net_health", DotNetVar.Type.FLOAT_RANGE).range_of(0.0, 1000.0).bits(12)
 	replicate(&"net_riding", DotNetVar.Type.BOOL)
+
+	for spec in ZeeWeaponNet.all_specs():
+		var declaration := replicate(spec["property"], DotNetVar.Type[spec["type"]])
+
+		if int(spec["bits"]) > 0:
+			declaration.bits(int(spec["bits"]))
+
+		if bool(spec["interpolated"]):
+			declaration.interpolated()
+
+		if bool(spec["owner_only"]):
+			var _owner := declaration.to_owner_only()
 
 
 func _net_apply_input(input: DotNetInput, _tick: int) -> void:
@@ -122,6 +163,13 @@ func pull() -> void:
 
 	net_riding = player.riding
 
+	# [b]After the arsenal has simulated, which on this end it has: the whole world ticks
+	# before anything is pulled.[/b] A rig that does not exist yet — which is every player
+	# for the first two thirds of a round — leaves these at zero, and zero is a carrier
+	# holding nothing, which is true.
+	if player.weapons != null:
+		ZeeWeaponNet.pull(player.weapons, self)
+
 
 ## The server's answer, adopted wholesale. On the owner it is the rewind half of
 ## reconciliation and the predictor replays every unacknowledged command on top.
@@ -173,3 +221,26 @@ func _adopt() -> void:
 
 	if player.riding != net_riding:
 		player.set_riding(net_riding)
+
+	_apply_weapons()
+
+
+## What a watcher does with somebody else's weapon state.
+##
+## [b]A counter, never an event per shot.[/b] An RPC per shot needs a reliable channel for
+## something worthless if it arrives late, costs a packet per shot per watcher, and
+## desynchronises from the state it belongs with — so a watcher can see the muzzle flash of
+## a weapon the same snapshot says has been holstered. A four-bit counter inside the
+## snapshot cannot do any of those: a watcher who missed a snapshot sees it jump by two and
+## plays one flash instead of two, which is the correct amount of wrong.
+##
+## The world model is null here and that is not a gap. Drawing somebody else's gun in their
+## hands needs a character with a hand mount, which this game has not built — see its
+## CLAUDE.md. What the state is for meanwhile is the HUD and the fact that it is CARRIED at
+## all, and `ZeeWeaponNet.apply` is written to take a null model and still answer.
+func _apply_weapons() -> void:
+	var answer := ZeeWeaponNet.apply(self, null, _seen_fire_seq)
+	_seen_fire_seq = int(answer["seq"])
+
+	if int(answer["fired"]) > 0:
+		weapon_used.emit(int(answer["fired"]), int(answer["kind"]))

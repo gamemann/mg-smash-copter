@@ -74,15 +74,16 @@ func _net_config() -> DotNetConfig:
 	config.snapshot_rate = ScGame.NET_SNAPSHOT_RATE
 	config.world_extent = ScGame.NET_WORLD_EXTENT
 	config.enable_prediction = true
-	# [b]Off, and it is off because this game has not written the half that makes it
-	# work.[/b] Lag compensation is two callables on [DotCombatManager] — a rewind and a
-	# restore — and without them the addon says so at boot and resolves every shot against
-	# the present anyway. Leaving it on would be a setting that is reported as enabled, does
-	# nothing, and takes a reader an afternoon to find out about; the family calls that
-	# "produced correctly and consumed by nothing" and it is this tree's second most
-	# repeated bug. It goes on the day the rewind is written, which is a history of hitbox
-	# transforms per tick and is a day's work rather than a line.
-	config.enable_lag_compensation = false
+	# [b]On, and the two callables that make it real are wired by the bridge.[/b] It was off
+	# for as long as they were not: a flag reported as enabled with nothing behind it is
+	# worse than one that is off, because the first reader to trust it loses an afternoon.
+	# See [method ScNetBridge._wire_lag_compensation].
+	#
+	# The showdown is a fight at range with rifles, which is the ordinary reason to want it.
+	# The less obvious one is that this game's hitboxes stand on a floor that was in a
+	# different place a hundred milliseconds ago — so rewinding a player rewinds where the
+	# platform had carried them to, which nothing else could reconstruct.
+	config.enable_lag_compensation = true
 	# A dozen platforms, up to a hundred and ten props, a couple of choppers and everybody
 	# playing — all of it always relevant, because the map is open air and a player can see
 	# the whole of it.

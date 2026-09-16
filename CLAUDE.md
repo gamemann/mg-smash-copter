@@ -43,7 +43,7 @@ assets/kenney/      eight CC0 models and two atlases
 assets/{blaster-kit,melee,arms}/  the weapon pack's own art, vendored
 textures/prototype/ six CC0 prototype textures, one per role
 scenes/             sc_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (95), dedicated (43), headless_net (122)
+examples/           headless_run (95), dedicated (43), headless_net (131)
 tools/              shot.gd/.tscn/.sh — render a frame and look at it
 ```
 
@@ -99,7 +99,7 @@ Every one of these was found by running the game or by looking at a picture of i
 
 - **A teleport set the yaw and the motor took it straight back.** The motor reads its view from the COMMAND, not from the state, and repeats the last command when it is handed none — so a survivor placed in their corner facing inward was looking due north one tick later. Every position was correct and every facing was wrong. `place_at` applies a command carrying the new angle now.
 
-- **Lag compensation was on with nothing wired to it**, which dot-combat reports at boot and then resolves every shot against the present anyway. It is off, and `sc_module.gd` says what turning it on costs.
+- **Lag compensation was on with nothing wired to it**, which dot-combat reports at boot and then resolves every shot against the present anyway — a flag reported as enabled with nothing behind it. It is wired now: dot-net already records the history, so the bridge hands over a rewind and a restore and that is the whole of it. The shooter is deliberately not excluded from the rewind, because `resolve_shot` fixes the shot's origin before it rewinds anything.
 
 - **The map came back white.** At a sun energy of 1.05, an ambient of 0.42 and a filmic curve, every surface was within a few percent of white and the prototype grid — the one thing a player reads a tilt off — was simply gone. This game renders under `gl_compatibility` because the browser is the client shell's target, and a scene lit for Forward+ is blown out there with nothing reporting it.
 
@@ -126,6 +126,8 @@ Every one of these was found by running the game or by looking at a picture of i
 **A platform replicates in four numbers, and the state is not interpolated.** The lean moves continuously and a client between two snapshots should be between two leans; a platform that has come off its pillar takes its collider away on the tick the client is told, not smoothly over the next three. Half way between standing and gone is not a thing a floor can be.
 
 **The clock carries what a client cannot count.** A client runs no platform model, so counting the platforms that are still up would count whatever it last heard — and that number is the most important one on this game's HUD, because it is what tells a player whether there is anywhere left to go.
+
+**The weapons replicate as a counter, never as an event per shot.** An RPC per shot needs a reliable channel for something worthless if it arrives late, costs a packet per shot per watcher, and desynchronises from the state it belongs with — so a watcher sees the muzzle flash of a weapon the same snapshot says has been holstered. A four-bit counter inside the snapshot cannot do any of those: a watcher who missed a snapshot sees it jump by two and plays one flash instead of two, which is the correct amount of wrong. The magazine and the reserve are owner-only, because exact ammunition is information an opponent should not have.
 
 **`examples/headless_net.tscn` is the real path minus the socket.** Two worlds, two managers, two bridges and two links with the RPC replaced by a callable — so the encoders, the seal, the snapshot build, the prediction and the reconciliation all run. The client is deliberately given a different tick rate and a different field than the server, because one process has one engine rate and one default configuration: two halves that agree by construction make every assertion that they agree pass for the wrong reason. Four of the findings above came from it, and it cannot see Godot's own RPC routing — that is what `dedicated.tscn` and a real client are for.
 
@@ -169,7 +171,7 @@ find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read
 done
 godot --headless --path . res://examples/headless_run.tscn   # 13 sections, 95 checks
 godot --headless --path . res://examples/dedicated.tscn      # 7 sections, 43 checks
-godot --headless --path . res://examples/headless_net.tscn   # 13 sections, 122 checks
+godot --headless --path . res://examples/headless_net.tscn   # 14 sections, 131 checks
 tools/shot.sh --view=field
 tools/shot.sh --view=lean
 tools/shot.sh --view=copter

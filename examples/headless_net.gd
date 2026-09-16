@@ -38,8 +38,8 @@ const ScSpecials := preload("../game/sc_specials.gd")
 ## real client is a separate program with its own export. Make them disagree, and let HELLO
 ## and LAYOUT correct it.
 
-const SECTIONS := 12
-const CHECKS := 122
+const SECTIONS := 14
+const CHECKS := 131
 
 ## Who the client is, on both ends.
 const CLIENT_PEER := 7
@@ -107,6 +107,7 @@ func _run() -> void:
 		await _test_props_arrive()
 		await _test_moving()
 		await _test_the_phases()
+		await _test_a_weapon_crosses()
 		await _test_a_special_is_announced()
 		await _test_chat_crosses()
 		await _test_a_lossy_link()
@@ -860,6 +861,105 @@ func _test_the_phases() -> void:
 	await _steps(10)
 
 	_check(seen.has(ScGame.Phase.SHOWDOWN), "the showdown is announced too")
+
+	_finished()
+
+
+## What a watcher can see of somebody else's weapon.
+##
+## [b]A counter, never an event per shot.[/b] An RPC per shot needs a reliable channel for
+## something worthless if it arrives late, costs a packet per shot per watcher, and
+## desynchronises from the state it belongs with — so a watcher sees the muzzle flash of a
+## weapon the same snapshot says has been holstered. game-playground shipped weapons that
+## were free and that nobody could see anybody else holding, from a `write_weapon` whose
+## `read_weapon` was never called.
+func _test_a_weapon_crosses() -> void:
+	_section("a weapon crosses")
+
+	var theirs: ScPlayer = _server_game.players.get(ScNetBridge.player_key(SESSION))
+
+	if theirs == null or theirs.weapons == null:
+		for what in [
+			"the carrier is holding something on the server",
+			"and the client is told which slot",
+			"a use crosses as a counter",
+			"which a watcher reads as a number of uses",
+			"and the magazine is owner-only",
+		]:
+			_check(false, what)
+
+		_finished()
+		return
+
+	_check(theirs.weapons.arsenal.current_slot() > 0,
+		"the carrier is holding something on the server",
+		"slot %d" % theirs.weapons.arsenal.current_slot())
+
+	await _steps(6)
+
+	var watcher: Variant = _client_bridge._behaviours.get(SESSION)
+	_check(watcher != null, "the client has a behaviour watching them")
+
+	if watcher == null:
+		_check(false, "and the client is told which slot")
+		_check(false, "a use crosses as a counter")
+		_check(false, "which a watcher reads as a number of uses")
+		_check(false, "and the magazine is owner-only")
+		_finished()
+		return
+
+	_check(
+		int(watcher.get(&"net_slot")) == theirs.weapons.arsenal.current_slot(),
+		"and the client is told which slot",
+		"%d vs %d" % [int(watcher.get(&"net_slot")), theirs.weapons.arsenal.current_slot()]
+	)
+
+	var uses: Array[int] = []
+	(watcher as Object).connect("weapon_used", func(times: int, _kind: int) -> void:
+		uses.append(times)
+	)
+
+	var before := int(watcher.get(&"net_fire_seq"))
+
+	# Fired on the server the way a player fires: the button rides in the movement command,
+	# because it is held and has to be ordered against the movement it was aimed with.
+	var firing := DotFpsCommand.new()
+	firing.set_button(ScNetCommand.BUTTON_FIRE, true)
+	await _steps(24, firing)
+
+	var after := int(watcher.get(&"net_fire_seq"))
+	_check(
+		after != before or theirs.weapons.fire_seq > 0,
+		"a use crosses as a counter",
+		"%d -> %d, rig at %d" % [before, after, theirs.weapons.fire_seq]
+	)
+	_check(not uses.is_empty(), "which a watcher reads as a number of uses",
+		"%d reports" % uses.size())
+
+	# [b]Owner-only, and it is information rather than bandwidth.[/b] Exact ammunition is
+	# something an opponent should not have; dot-combat makes the same decision about the
+	# same two numbers. This client IS the owner, so it does get them — what the check can
+	# say is that the field is declared that way at all.
+	var owner_only := false
+
+	for spec in ZeeWeaponNet.all_specs():
+		if spec["property"] == &"net_magazine":
+			owner_only = bool(spec["owner_only"])
+
+	_check(owner_only, "and the magazine is owner-only")
+
+	# [b]Lag compensation, wired rather than declared.[/b] dot-combat takes a rewind and a
+	# restore as callables and, unset, says so once at boot and resolves every shot against
+	# the present anyway — a flag reported as enabled with nothing behind it. This is the
+	# check that says the two ends of that seam are actually joined.
+	var combat := _server_game.combat.describe()
+	_check(bool(combat["lagcomp"]), "lag compensation is wired to the netcode's history")
+	_check(
+		_server_game.combat.rewind_fn.is_valid() and _server_game.combat.restore_fn.is_valid(),
+		"with BOTH callables, because a rewind that is never restored leaves the whole level in the past"
+	)
+	_check(int(combat["entities"]) >= 2, "and there are hitboxes to rewind",
+		"%d" % int(combat["entities"]))
 
 	_finished()
 

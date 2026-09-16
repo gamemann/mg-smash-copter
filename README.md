@@ -10,7 +10,7 @@ It is a first- and third-person multiplayer minigame built on the `dot-*` addon 
 godot --path .                                                # play it, alone, against stand-ins
 godot --headless --path . res://examples/headless_run.tscn    # the simulation, 95 checks
 godot --headless --path . res://examples/dedicated.tscn       # as a real server, 43 checks
-godot --headless --path . res://examples/headless_net.tscn     # over the wire, 122 checks
+godot --headless --path . res://examples/headless_net.tscn     # over the wire, 131 checks
 tools/shot.sh --view=field                                    # render a frame and look at it
 ```
 
@@ -121,6 +121,5 @@ The map itself is built in code. A grid of squares on pillars, a cylinder in the
 
 ## What does not work yet
 
-- **Weapons are not replicated.** The server decides every shot, health and deaths reach every client, and the HUD is told what each survivor drew — but a watcher does not see somebody else's gun in their hands, and the local view model is drawn from the client's own rig rather than from the server's state. `ZeeWeaponNet` is the seam and it is four fields.
-- **Lag compensation is off**, and it says so in `sc_module.gd`. dot-combat wants a rewind and a restore callable; this game has not written the history of hitbox transforms they need. Everything resolves against the present.
+- **Nobody draws somebody else's gun.** The weapon state replicates — the slot, the reload, the switch and a use counter — but hanging a world model on a watcher's copy of a player needs a character with a hand mount, and this game draws players as capsules.
 - **No profiles and no avatars.** dot-game reports the missing identity layer and carries on, which is a server where everybody is a guest.

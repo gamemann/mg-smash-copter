@@ -232,8 +232,46 @@ func attach(p_game: Object, p_net: DotNetManager) -> DotResult:
 		game.player_died.connect(_on_player_died)
 		game.platform_collapsed.connect(_on_platform_collapsed)
 		game.blast.connect(_on_blast)
+		_wire_lag_compensation()
 
 	return DotResult.success(true)
+
+
+## Hands dot-combat the two callables that make lag compensation real.
+##
+## [b]Two lines, and without them the setting is a lie.[/b] dot-combat names no dot-net type
+## — the whole point of the seam — so it takes a rewind and a restore as [Callable]s and,
+## unset, says so once at boot and then resolves every shot against the present anyway. A
+## game that left the flag on and the callables unset would report lag compensation as
+## enabled, do nothing, and cost the next reader an afternoon; this family calls that
+## "produced correctly and consumed by nothing" and it is its second most repeated bug.
+##
+## dot-net already records the history: `DotNetManager.server_tick` calls
+## `history.record(identities, tick)` once a snapshot. There is nothing to build.
+##
+## [b]The shooter is not excluded, and that is safe here rather than an oversight.[/b]
+## `DotNetHistory.rewind` can leave one entity alone so that rewinding does not move the
+## shooter's own muzzle — but `resolve_shot` fixes `shot.origin` before it rewinds anything,
+## so the muzzle has already been decided, and the resolver refuses self damage separately.
+## What excluding would buy is one fewer entity moved and put back.
+func _wire_lag_compensation() -> void:
+	if game.combat == null or net == null:
+		return
+
+	if game.combat.config != null:
+		game.combat.config.lag_compensation = true
+
+	game.combat.rewind_fn = func(target_tick: float) -> void:
+		var _rewound := net.history.rewind(
+			net.registry.all(), int(target_tick), net.clock.tick
+		)
+
+	game.combat.restore_fn = func() -> int:
+		return net.history.restore()
+
+	DotLog.debug(CHANNEL, "lag compensation is wired to the netcode's history", {
+		"max_rewind_ms": game.combat.config.max_rewind_ms if game.combat.config != null else 0.0,
+	})
 
 
 ## Opens the link under [param parent], whose NAME is half the RPC routing.
