@@ -43,7 +43,7 @@ assets/kenney/      eight CC0 models and two atlases
 assets/{blaster-kit,melee,arms}/  the weapon pack's own art, vendored
 textures/prototype/ six CC0 prototype textures, one per role
 scenes/             sc_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (103), dedicated (43), headless_net (134)
+examples/           headless_run (106), dedicated (43), headless_net (134)
 tools/              shot.gd/.tscn/.sh — render a frame and look at it
 ```
 
@@ -187,7 +187,7 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 14 sections, 103 checks
+godot --headless --path . res://examples/headless_run.tscn   # 14 sections, 106 checks
 godot --headless --path . res://examples/dedicated.tscn      # 7 sections, 43 checks
 godot --headless --path . res://examples/headless_net.tscn   # 14 sections, 134 checks
 tools/shot.sh --view=field

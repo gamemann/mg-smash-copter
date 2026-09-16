@@ -38,7 +38,7 @@ const SECTIONS := 14
 ## checks that already ran still print ok, the ones after it never happen, and the section
 ## counter is satisfied because the section announced itself on the way in. dot-settings
 ## reported "8 sections, 63 passed, 0 failed" and exited 0 with eight checks missing.
-const CHECKS := 103
+const CHECKS := 106
 
 const TICK_RATE := 64
 const TICK := 1.0 / float(TICK_RATE)
@@ -249,6 +249,44 @@ func _test_world_builds() -> void:
 		"a point over a platform finds it")
 	_check(game.platforms.index_at(9000.0, 9000.0) == -1,
 		"a point over nothing finds nothing")
+
+	# [b]The showdown's edges, which were designed, documented twice and built nowhere.[/b]
+	# `_pad` was described as "one flat surface with a kerb around it", `CORNER_LIP` had a
+	# doc comment explaining why the lip is not cover, and no line put one in the world. A
+	# render found it; nothing here could have, so this is the check that keeps it.
+	#
+	# Counted rather than measured: a pad is four kerbs and a catwalk is two, because a kerb
+	# across a catwalk's short end is a step in the middle of the walkway rather than a rail
+	# beside it.
+	var pads := 0
+	var walks := 0
+	var thin := PackedStringArray()
+
+	for child: Node in game.arena.find_children("*", "StaticBody3D", true, false):
+		var kerbs := 0
+
+		for piece: Node in child.get_children():
+			if String(piece.name).begins_with("KerbHit"):
+				kerbs += 1
+
+		if String(child.name).begins_with("Catwalk"):
+			walks += 1
+
+			if kerbs != 2:
+				thin.append("%s has %d" % [child.name, kerbs])
+		elif String(child.name).begins_with("Pad") or child.name == "Ring":
+			pads += 1
+
+			if kerbs != 4:
+				thin.append("%s has %d" % [child.name, kerbs])
+
+	_check(pads == game.config.team_count + 1,
+		"every corner and the ring is a pad", "%d pads" % pads)
+	_check(walks == game.config.team_count,
+		"and every corner has a catwalk to the ring", "%d walks" % walks)
+	_check(thin.is_empty(),
+		"a pad is edged on four sides and a catwalk on two",
+		", ".join(thin))
 
 	await _dispose(game)
 	_finished()

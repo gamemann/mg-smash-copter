@@ -8,9 +8,9 @@ It is a first- and third-person multiplayer minigame built on the `dot-*` addon 
 
 ```bash
 godot --path .                                                # play it, alone, against stand-ins
-godot --headless --path . res://examples/headless_run.tscn    # the simulation, 95 checks
+godot --headless --path . res://examples/headless_run.tscn    # the simulation, 103 checks
 godot --headless --path . res://examples/dedicated.tscn       # as a real server, 43 checks
-godot --headless --path . res://examples/headless_net.tscn     # over the wire, 131 checks
+godot --headless --path . res://examples/headless_net.tscn     # over the wire, 134 checks
 tools/shot.sh --view=field                                    # render a frame and look at it
 ```
 
@@ -99,6 +99,8 @@ godot --headless --path ../mg-smash-copter --import
 ./server --game smash
 # then connect the client shell to 127.0.0.1:6070
 ```
+
+That path is checked rather than described: `dot-server-deploy/examples/smash_client.tscn` publishes nothing and assumes nothing, but it mounts the pack on a real server, connects a real client over a real socket, and asserts that the module's script is the mounted copy, that the world builds its platforms under its own gravity, that a round starts and the cannon puts something in the air, and that the client rebuilds a field of its own. It is the only place any of that can be seen: the three suites above all run inside this project, where the files are at `res://` and the globals are registered, which is the one condition a delivered pack never has.
 
 ### What replicates, and what does not
 
