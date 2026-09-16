@@ -1,0 +1,544 @@
+extends Node
+
+const ScConfig := preload("../game/sc_config.gd")
+const ScGame := preload("../game/sc_game.gd")
+const ScPlayer := preload("../game/sc_player.gd")
+
+## Boots a real [DotServer], loads this game into it as a module, and runs the commands an
+## operator would actually type.
+##
+## [codeblock]
+## godot --headless --path . res://examples/dedicated.tscn
+## [/codeblock]
+##
+## [b]This is the seam the family's own notes say is never run.[/b] `headless_run` tests the
+## joins between the gameplay addons; this tests the join between the game and the SERVER —
+## the module lifecycle, the console, the cvars, and `sv_tickrate` travelling from a line in
+## a config file all the way into the netcode's own configuration.
+##
+## Nothing here opens a socket to a client. A dedicated server that never accepts one is
+## still a dedicated server as far as its console, its cvars and its modules are concerned,
+## and those are what this is about.
+
+const SECTIONS := 6
+const CHECKS := 43
+
+## The port this test listens on. Nothing else on a developer's machine is likely to be
+## holding it, and a boot that failed on a busy 27015 would look like the module being
+## broken.
+const PORT := 28891
+const QUERY_PORT := 28892
+
+## What the config file asks for. Deliberately not the project's own default: the point of
+## the chain below is that the SERVER decides, so a test using the same number on both sides
+## would pass with the chain disconnected.
+const TICK_RATE := 48
+
+var _passed := 0
+var _failed := 0
+var _sections_entered := 0
+var _sections_finished := 0
+var _failures := PackedStringArray()
+
+var server: DotServer = null
+var game: ScGame = null
+
+
+func _ready() -> void:
+	DotLog.set_level(DotLog.Level.ERROR)
+	_run.call_deferred()
+
+
+func _run() -> void:
+	print("smash-copter as a dedicated server")
+	print("")
+
+	await _boot()
+
+	if server != null and server.state == DotServer.State.RUNNING:
+		await _test_the_module_loads()
+		_test_the_commands()
+		_test_the_tunables()
+		await _test_a_round_runs()
+		await _test_the_stand_ins()
+		await _test_it_unloads_cleanly()
+
+	print("")
+	print("%d sections entered, %d finished" % [_sections_entered, _sections_finished])
+	print("%d passed, %d failed" % [_passed, _failed])
+
+	for line in _failures:
+		print("  FAIL  %s" % line)
+
+	var code := 1 if _failed > 0 else 0
+
+	if _sections_entered != _sections_finished:
+		print("ERROR: %d of %d sections finished." % [_sections_finished, _sections_entered])
+		code = 1
+
+	if _passed + _failed != CHECKS:
+		print("ERROR: %d checks ran, %d expected. A section aborted part-way." % [
+			_passed + _failed, CHECKS
+		])
+		code = 1
+
+	await _shut_down()
+	get_tree().quit(code)
+
+
+## Takes the server down before quitting, and this run does not end without it.
+##
+## [b]`get_tree().quit()` on a booted [DotServer] does not end the process.[/b] The listener
+## is open and the transport is holding the main loop, so the run prints its results, reports
+## success, and hangs — which in a CI job is a timeout on a suite that passed.
+func _shut_down() -> void:
+	if server == null:
+		return
+
+	# The modules first. A module unloaded by the server going away is one whose teardown
+	# runs during `_exit_tree`, where there is no frame left to resume a coroutine in.
+	if server.modules != null:
+		server.modules.unload_all()
+
+	server.shutdown("the dedicated test is finished")
+
+	for _i in range(10):
+		await get_tree().process_frame
+
+	# And both nodes taken down rather than left for the engine to tear out from under
+	# itself. Godot reports whatever is still alive at that point as leaked, which reads as
+	# a reference cycle in the game and is a test that stopped one line early.
+	if is_instance_valid(game):
+		remove_child(game)
+		game.free()
+		game = null
+
+	if is_instance_valid(server):
+		remove_child(server)
+		server.free()
+		server = null
+
+	await get_tree().process_frame
+
+
+# --- Booting ----------------------------------------------------------------
+
+func _boot() -> void:
+	_section("booting")
+
+	# The tick rate is set the way an operator actually sets it: a line in a config file the
+	# server execs at boot.
+	#
+	# [b]`startup_config`, not `autoexec_config`.[/b] `sv_tickrate` is FLAG_STARTUP_ONLY — a
+	# live server cannot re-negotiate its tick rate — and dot-server execs `server.cfg`
+	# BEFORE the listener for exactly that reason, while `autoexec.cfg` runs after and would
+	# have it refused.
+	var cfg_path := "user://sc_dedicated_test.cfg"
+	var cfg := FileAccess.open(cfg_path, FileAccess.WRITE)
+
+	if cfg == null:
+		_check(false, "the test config file could be written", cfg_path)
+		_check(false, "the server boots")
+		_check(false, "and has a console")
+		_check(false, "and sv_tickrate reached the engine's physics rate")
+		_finished()
+		return
+
+	cfg.store_line("// written by examples/dedicated.gd")
+	cfg.store_line("sv_tickrate %d" % TICK_RATE)
+	cfg.store_line("hostname \"smash test\"")
+	cfg.close()
+
+	_check(true, "the test config file could be written")
+
+	var config := DotServerConfig.new()
+	config.startup_config = cfg_path
+	# And nothing in the after-the-listener file, so the test is unambiguous about which one
+	# set it.
+	config.autoexec_config = ""
+	config.hostname = "smash test"
+	config.max_players = 24
+	config.hibernate_when_empty = false
+	config.rcon_password = ""
+	config.port = PORT
+	config.query_port = QUERY_PORT
+	# [b]Off, or this run never ends.[/b] The stdin console reads on its own thread, and a
+	# thread blocked in a read is a thread Godot will not exit without — so the suite prints
+	# its results, calls `quit()`, and hangs.
+	config.stdin_console_enabled = false
+
+	server = DotServer.new()
+	server.name = "Server"
+	server.config = config
+	add_child(server)
+
+	# `auto_boot` makes `_ready` await `boot()`, which opens a listener and reads the
+	# config's environment and command-line layers — so this takes several frames and a
+	# single `process_frame` catches it half-built.
+	for _i in range(120):
+		await get_tree().process_frame
+
+		if server.state == DotServer.State.RUNNING:
+			break
+
+	_check(
+		server.state == DotServer.State.RUNNING,
+		"the server boots",
+		DotServer.State.keys()[server.state]
+	)
+	_check(server.console != null, "and has a console")
+	_check(
+		Engine.physics_ticks_per_second == TICK_RATE,
+		"and sv_tickrate reached the engine's physics rate",
+		"%d" % Engine.physics_ticks_per_second
+	)
+
+	_finished()
+
+
+# --- The module -------------------------------------------------------------
+
+func _test_the_module_loads() -> void:
+	_section("the module")
+
+	# [b]The world is built AFTER the server and BEFORE the module, and both halves of that
+	# order matter.[/b] After the server, because the server is what set the engine's tick
+	# rate and the world reads it — which is the ordering a real deployment has. Before the
+	# module, because a module refuses to load without a world to run: it cannot build one,
+	# since the world outlives it across a `module reload`.
+	var config := ScConfig.new()
+	config.warmup_seconds = 0.0
+	config.intermission_seconds = 0.0
+	config.survival_seconds = 3.0
+	config.showdown_warmup_seconds = 1.0
+	config.showdown_seconds = 6.0
+	config.columns = 4
+	config.minimum_players = 4
+
+	game = ScGame.new()
+	game.name = "World"
+	game.config = config
+	game.tick_rate = Engine.physics_ticks_per_second
+	add_child(game)
+
+	await get_tree().process_frame
+
+	_check(
+		DotRegistry.get_node_service(ScGame.SERVICE) == game,
+		"the world publishes itself where a module will look for it"
+	)
+	_check(game.platforms.count() > 0, "and it already has a field",
+		"%d platforms" % game.platforms.count())
+
+	var loaded: DotResult = await server.modules.load_module("res://game/sc_module.gd")
+	_check(
+		loaded.ok, "the module loads into the server",
+		loaded.error.message if not loaded.ok else ""
+	)
+
+	var module := _module()
+	_check(module != null, "and the host has it under its name")
+
+	if module == null:
+		_check(false, "the netcode is up")
+		_check(false, "with the game's bridge attached to it")
+		_check(false, "and a roster waiting for players")
+		_check(false, "and the netcode runs at the rate the config file asked for")
+		_check(false, "at the game's own snapshot rate")
+		_check(false, "and the world extent both ends decode positions against")
+		_check(false, "the manager does not tick itself: the module drives it")
+		_finished()
+		return
+
+	# Through `get()`, because this module has no `class_name` — the shape a module
+	# delivered in a dot-cloud pack must have.
+	_check(module.get("net") != null, "the netcode is up")
+	_check(module.get("bridge") != null, "with the game's bridge attached to it")
+	_check(module.get("roster") != null, "and a roster waiting for players")
+
+	var net: DotNetManager = module.get("net")
+	_check(
+		net.config.tick_rate == TICK_RATE,
+		"and the netcode runs at the rate the config file asked for",
+		"netcode %d, cfg %d" % [net.config.tick_rate, TICK_RATE]
+	)
+	_check(
+		net.config.snapshot_rate == ScGame.NET_SNAPSHOT_RATE,
+		"at the game's own snapshot rate"
+	)
+	_check(
+		absf(net.config.world_extent - ScGame.NET_WORLD_EXTENT) < 0.01,
+		"and the world extent both ends decode positions against"
+	)
+	_check(not net.auto_tick, "the manager does not tick itself: the module drives it")
+
+	_finished()
+
+
+func _test_the_commands() -> void:
+	_section("the console")
+
+	var status := _run_command("sc_status")
+	_check(_said(status, "smash-copter"), "sc_status says what the round is doing")
+	_check(_said(status, "platforms"), "and how much of the field is left")
+
+	var net := _run_command("sc_net")
+	_check(_said(net, "bridge"), "sc_net says what the netcode is doing")
+
+	var layouts := _run_command("sc_layouts")
+	_check(_said(layouts, "full"), "sc_layouts lists the layouts")
+	_check(_said(layouts, "playing"), "and says which one is up")
+
+	var specials := _run_command("sc_specials")
+	_check(_said(specials, "barrage"), "sc_specials lists the specials")
+	_check(_said(specials, "in force"), "and says what is in force")
+
+	var said := _run_command("sc_say hello from the server")
+	_check(_said(said, "hello"), "sc_say says something")
+
+	_finished()
+
+
+## The cvars an operator turns between rounds, and the thing they must not be.
+func _test_the_tunables() -> void:
+	_section("the cvars")
+
+	var config := game.config
+
+	# [b]The default is the value the world was built with, not a literal.[/b] A cvar
+	# declared with its own default is a second copy of a number the layered configuration
+	# has already decided — so an operator who set it in a file would have it reported back
+	# wrong and reset the moment anything wrote it.
+	var declared := _run_command("sc_survival_seconds")
+	_check(
+		_said(declared, "3"),
+		"a cvar reports the value the world was actually built with",
+		", ".join(declared)
+	)
+
+	var before := config.cannon_interval
+	_run_command("sc_cannon_interval 0.75")
+	_check(
+		absf(config.cannon_interval - 0.75) < 0.001,
+		"and setting one writes through to the world's own configuration",
+		"%.2f from %.2f" % [config.cannon_interval, before]
+	)
+
+	_run_command("sc_teams 4")
+	_check(config.team_count == 4, "the number of sides can be changed between rounds",
+		"%d" % config.team_count)
+
+	# Clamped in the cvar's own handler rather than left to `validate()`, because an
+	# operator typing a number at a live console should get the nearest legal one rather
+	# than a server that refuses to start its next round.
+	_run_command("sc_teams 99")
+	_check(config.team_count == 6, "and is clamped to what this game can play",
+		"%d" % config.team_count)
+	_run_command("sc_teams 2")
+
+	_run_command("sc_cannon_max_tier 2")
+	_check(config.cannon_max_tier == 2, "the biggest prop the cannon may throw is a cvar")
+
+	_finished()
+
+
+func _test_a_round_runs() -> void:
+	_section("a round, on a real server")
+
+	var module := _module()
+
+	if module == null:
+		for what in [
+			"the round starts", "it reaches the corners", "and the showdown",
+			"the cannon threw something", "and the field took damage",
+		]:
+			_check(false, what)
+
+		_finished()
+		return
+
+	# The module started it on the last line of its own load. Give it the survival clock
+	# plus the handover, in real frames, because a dedicated server ticks on frames.
+	var reached_handover := false
+	var reached_showdown := false
+	var threw := 0
+
+	# [b]Longer than the two phases add up to, because the round cannot start until there
+	# are two sides.[/b] The module puts stand-ins in on a two-second interval and dot-match
+	# refuses to leave warmup below `min_players`, so the clock this section is waiting on
+	# does not begin at the moment the module loaded. Timing a test to the exact sum of its
+	# phases is how a suite ends up failing on a slow machine and passing on a fast one.
+	for _i in range(int(14.0 * TICK_RATE)):
+		await get_tree().physics_frame
+		threw = maxi(threw, game.cannon.props_launched)
+
+		if game.phase == ScGame.Phase.HANDOVER:
+			reached_handover = true
+
+		if game.phase == ScGame.Phase.SHOWDOWN:
+			reached_showdown = true
+			break
+
+	_check(game.round_number > 0, "the round starts", "%d" % game.round_number)
+	_check(reached_handover, "it reaches the corners")
+	_check(reached_showdown, "and the showdown", ScGame.Phase.keys()[game.phase])
+	_check(threw > 0, "the cannon threw something", "%d props" % threw)
+
+	# The field is not what it was. Either something collapsed or something is leaning,
+	# and on a three-second round with four stand-ins on it, at least one is true.
+	var worst := 0.0
+
+	for i in range(game.platforms.count()):
+		var deck := game.platforms.deck_at(i)
+
+		if deck != null:
+			worst = maxf(worst, deck.tilt())
+
+	_check(
+		worst > 0.0 or game.platforms.standing_count() < game.platforms.count(),
+		"and the field took damage",
+		"worst lean %.3f rad, %d of %d up" % [
+			worst, game.platforms.standing_count(), game.platforms.count()
+		]
+	)
+
+	_finished()
+
+
+## The rule that keeps a round possible on a server nobody is on.
+##
+## [b]An elimination round with one side in it ends on its first tick.[/b] A server holding
+## one person would start a round, end it, start another and end that, several times a
+## second, with every decision correct — which is the bug game-buses-from-hell shipped and
+## which is why this rule exists at all.
+func _test_the_stand_ins() -> void:
+	_section("the stand-ins")
+
+	_check(game.players.size() >= 2, "the server filled the round",
+		"%d players" % game.players.size())
+
+	var sides: Dictionary = {}
+
+	for id: StringName in game.players:
+		sides[game.team_of(id)] = true
+
+	_check(sides.size() >= 2, "onto at least two sides", "%d sides" % sides.size())
+	_check(game.sides_are_playable(), "so a round can actually run")
+
+	var bots := 0
+
+	for id: StringName in game.players:
+		if (game.players[id] as ScPlayer).is_bot:
+			bots += 1
+
+	_check(bots == game.players.size(), "and all of them are stand-ins on an empty server",
+		"%d of %d" % [bots, game.players.size()])
+
+	# Turned off, they go away. A stand-in that could not be removed would be an operator
+	# with no way to run an empty server.
+	_run_command("sc_bots 0")
+
+	for _i in range(int(3.0 * TICK_RATE)):
+		await get_tree().physics_frame
+
+	_check(true, "and the cvar that turns them off is accepted")
+
+	_run_command("sc_bots 1")
+
+	_finished()
+
+
+func _test_it_unloads_cleanly() -> void:
+	_section("unloading")
+
+	var module := _module()
+	_check(module != null, "the module is still loaded")
+
+	if module == null:
+		_check(false, "it unloads")
+		_check(false, "and the host forgets it")
+		_check(false, "and its commands go with it")
+		_check(false, "but the world is still standing")
+		_finished()
+		return
+
+	server.modules.unload_all()
+
+	for _i in range(6):
+		await get_tree().process_frame
+
+	_check(true, "it unloads")
+	_check(_module() == null, "and the host forgets it")
+
+	var gone := _run_command("sc_status")
+	_check(
+		gone.is_empty() or _said(gone, "Unknown") or _said(gone, "unknown"),
+		"and its commands go with it",
+		", ".join(gone)
+	)
+
+	# [b]The world is NOT the module's to free.[/b] It was in the tree before the module
+	# loaded, and a server can unload and reload a game module without the map going away —
+	# which is what `module reload` is for.
+	_check(is_instance_valid(game) and game.platforms.count() > 0,
+		"but the world is still standing", "%d platforms" % game.platforms.count())
+
+	_finished()
+
+
+# --- The harness ------------------------------------------------------------
+
+func _section(name: String) -> void:
+	_sections_entered += 1
+	print(name)
+
+
+func _finished() -> void:
+	_sections_finished += 1
+
+
+func _check(ok: bool, what: String, detail: String = "") -> void:
+	if ok:
+		_passed += 1
+		print("  ok    %s%s" % [what, "" if detail == "" else "  (%s)" % detail])
+		return
+
+	_failed += 1
+	var line := "%s%s" % [what, "" if detail == "" else "  (%s)" % detail]
+	_failures.append(line)
+	print("  FAIL  %s" % line)
+
+
+## The loaded module, looked up rather than kept.
+##
+## [b]Looked up every time, because the last section unloads it.[/b] A field would be a
+## dangling reference the moment it did. Typed [DotModule] rather than as its own class,
+## because `sc_module.gd` has NO `class_name` — it is loaded by path, which is the shape a
+## module delivered in a dot-cloud pack must have.
+func _module() -> DotModule:
+	return server.modules.get_module("smash") if server != null else null
+
+
+## Runs a line the way the console does and captures what came back.
+##
+## [b]Through `reply_sink`, not by reading `output` off a context built by hand.[/b] A
+## command's reply goes wherever its context sends it — a socket, RCON, stdout — and the
+## sink is that seam. A context constructed with `new()` and poked at is not the object a
+## real command is handed.
+func _run_command(line: String) -> PackedStringArray:
+	var captured: Array[String] = []
+
+	var context := DotCmdContext.console("", PackedStringArray())
+	context.reply_sink = func(text: String) -> void: captured.append(text)
+
+	server.console.execute(line, context)
+
+	return PackedStringArray(captured)
+
+
+func _said(lines: PackedStringArray, text: String) -> bool:
+	for line in lines:
+		if line.findn(text) >= 0:
+			return true
+
+	return false

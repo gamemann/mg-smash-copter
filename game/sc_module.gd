@@ -1,0 +1,469 @@
+extends DotGameModule
+
+const ScNetBridge := preload("net/sc_net_bridge.gd")
+const ScServices := preload("sc_services.gd")
+
+const ScGame := preload("sc_game.gd")
+const ScLayouts := preload("sc_layouts.gd")
+const ScPlayer := preload("sc_player.gd")
+const ScSpecials := preload("sc_specials.gd")
+
+## This game, as a module a dedicated server loads.
+##
+## [b]A hundred and forty lines, against the five hand-written modules' 837 to 1,816.[/b]
+## [DotGameModule] holds the netcode and its four load-bearing constants, the bridge, the
+## message seal, the identity layer, the roster, the authoritative tick and a teardown in
+## the reverse order. Two of those five hand-written copies had the same line wrong and
+## nobody could ever join those servers. What is left here is what is actually this game's:
+## the cvars an operator turns between rounds, the two console commands, and the rule that
+## keeps enough people in a round for one to happen.
+##
+## [b]No `class_name`, and that is a requirement rather than a style.[/b]
+## [method DotModuleHost.load_module] takes a PATH and constructs the module itself — it
+## must, because that is the shape that lets an operator name one in a config file — and a
+## module delivered inside a dot-cloud pack cannot have a `class_name` at all: a mounted
+## pack's globals are not registered in the host.
+##
+## [codeblock]
+## server.modules.load_module("res://game/sc_module.gd")
+## [/codeblock]
+
+# [b]No `const CHANNEL` here, and its absence is the point.[/b] [DotGameModule] already
+# declares one and GDScript refuses to let a subclass redeclare it — which is the right
+# refusal: a module logs through [method DotModule.log_info], which stamps the module's own
+# name, so a second channel would split one module's records across two places an operator
+# has to know to turn up separately.
+
+## Seconds between checks of how many people are in the round.
+const ROSTER_INTERVAL := 2.0
+
+## The `sc_bots` cvar, held so the tick does not look it up sixty times a second.
+var _bots: DotConVar = null
+
+var _since_roster_check: float = 0.0
+
+## How many stand-ins this module has put in, so it can take them out again.
+var _bot_ids: Array[StringName] = []
+
+
+func _module_name() -> String:
+	return "smash"
+
+
+func _game_service() -> StringName:
+	return ScGame.SERVICE
+
+
+func _game_missing_hint() -> String:
+	return (
+		"create an ScGame, add it to the tree and let its _ready() register it under "
+		+ "'%s' — a module cannot build the world, because the world outlives it"
+		% String(ScGame.SERVICE)
+	)
+
+
+## The netcode's numbers, which are the game's and not the addon's.
+##
+## Tick rate from the world, so `sv_tickrate` reaches it: the server sets the engine's
+## physics rate from that cvar at boot, the world is built after the server and reads it,
+## and this reads the world. A number written here instead would be a netcode running at a
+## rate the operator did not choose, silently.
+func _net_config() -> DotNetConfig:
+	var config := DotNetConfig.new()
+	config.tick_rate = (game as ScGame).tick_rate
+	config.snapshot_rate = ScGame.NET_SNAPSHOT_RATE
+	config.world_extent = ScGame.NET_WORLD_EXTENT
+	config.enable_prediction = true
+	# [b]Off, and it is off because this game has not written the half that makes it
+	# work.[/b] Lag compensation is two callables on [DotCombatManager] — a rewind and a
+	# restore — and without them the addon says so at boot and resolves every shot against
+	# the present anyway. Leaving it on would be a setting that is reported as enabled, does
+	# nothing, and takes a reader an afternoon to find out about; the family calls that
+	# "produced correctly and consumed by nothing" and it is this tree's second most
+	# repeated bug. It goes on the day the rewind is written, which is a history of hitbox
+	# transforms per tick and is a day's work rather than a line.
+	config.enable_lag_compensation = false
+	# A dozen platforms, up to a hundred and ten props, a couple of choppers and everybody
+	# playing — all of it always relevant, because the map is open air and a player can see
+	# the whole of it.
+	config.max_entities_per_snapshot = 192
+	return config
+
+
+func _make_bridge() -> Node:
+	return ScNetBridge.new()
+
+
+## Chat, voice and moderation, over [DotGameServices].
+##
+## [b]The bridge is handed over as the link, and that is the whole of the wiring.[/b] A chat
+## line goes out through `send_chat` and a voice frame through `send_voice`, both on this
+## game's own wire. [DotGameModule] does the rest: it assigns the bridge's `voice_relay_fn`,
+## checks `check_admission` before seating anybody, and tells the roster to follow this layer
+## so a leaver is forgotten by the rate limiter and the voice router together.
+func _make_services() -> Node:
+	var services := ScServices.new()
+	services.bridge = bridge
+	return services
+
+
+## [b]No identity layer, and it is the honest state rather than an oversight.[/b] Profiles
+## and avatars are real in this family and this game has not written that layer;
+## [DotGameModule] logs its absence and carries on. A server where everybody is a guest is
+## a server: a client connects, plays a whole round, talks, is scored and can be gagged.
+func _wants_platform_module() -> bool:
+	return false
+
+
+func _game_load() -> DotResult:
+	var world := game as ScGame
+
+	if world == null:
+		return DotResult.fail(DotError.CODE_STATE, "The registered game is not an ScGame.")
+
+	add_command("sc_status", _cmd_status, "Show the round, the field and the cannon")
+	add_command("sc_net", _cmd_net, "Show what the netcode is doing")
+	add_command("sc_layouts", _cmd_layouts, "List the platform layouts this server plays")
+	add_command("sc_specials", _cmd_specials, "List the special rounds, and what is in force")
+	add_command("sc_say", _cmd_say, "Say something to everybody, as the server")
+
+	_wire_chat()
+	_wire_armed(world)
+	_add_tunables(world)
+
+	_bots = add_cvar(
+		"sc_bots", "1",
+		"Keep the round full with stand-ins. 0 leaves the server as empty as it is."
+	)
+
+	# [b]Started here and not in the world's own `_ready`.[/b] `start()` lays the field out
+	# and puts everybody on it, and a world that did that before the bridge existed would
+	# have built a dozen platforms with nothing listening to `world_rebuilt` — a field the
+	# server knows about and no client is ever told about. They would be invisible floors:
+	# a player stands on nothing and the server says they are fine.
+	world.start()
+
+	log_info("the field is up", world.describe())
+	return DotResult.success(null)
+
+
+## The numbers an operator is actually going to want to change, as cvars.
+##
+## [b]Live, and each one writes through to the configuration the world already reads.[/b]
+## The alternative is what most of this family's games still do — a JSON file and a restart
+## — and the reason to do better here is the shape of this game: the whole thing is a
+## balance between how fast the cannon fires, how stiff the platforms are and how long a
+## round lasts, and an operator finds their server's numbers by moving one of them between
+## rounds with people watching.
+##
+## [b]What is NOT here is anything the world has already built.[/b] `sc_columns` changes how
+## many platforms the NEXT round is laid out with; it does not put a platform in the air
+## now. A cvar that pretended otherwise would be one an admin sets in the middle of a round
+## and then reports as broken.
+func _add_tunables(world: ScGame) -> void:
+	var config := world.config
+
+	_tunable("sc_survival_seconds", config.survival_seconds,
+		"Seconds on the platforms before the corners",
+		func(value: float) -> void: config.survival_seconds = value)
+	_tunable("sc_showdown_seconds", config.showdown_seconds,
+		"Seconds the fight in the corners lasts",
+		func(value: float) -> void: config.showdown_seconds = value)
+	_tunable("sc_teams", float(config.team_count), "How many sides play, two to six",
+		func(value: float) -> void: config.team_count = clampi(int(value), 2, 6))
+	_tunable("sc_columns", float(config.columns), "Platforms along each row, next round",
+		func(value: float) -> void: config.columns = clampi(int(value), 2, 12))
+	_tunable("sc_rows", float(config.rows), "Rows of platforms, next round",
+		func(value: float) -> void: config.rows = clampi(int(value), 1, 6))
+	_tunable("sc_stiffness", config.platform_stiffness,
+		"How hard a platform pushes itself level. Lower is wobblier",
+		func(value: float) -> void: config.platform_stiffness = value)
+	_tunable("sc_motion_gain", config.platform_motion_gain,
+		"How much harder a running player leans a platform than a walking one",
+		func(value: float) -> void: config.platform_motion_gain = value)
+	_tunable("sc_collapse_lean", config.platform_collapse_lean,
+		"Radians of lean a platform comes off its pillar at",
+		func(value: float) -> void: config.platform_collapse_lean = value)
+	_tunable("sc_cannon_interval", config.cannon_interval,
+		"Seconds between shots at the start of a round",
+		func(value: float) -> void: config.cannon_interval = value)
+	_tunable("sc_cannon_ramp", config.cannon_interval_ramp,
+		"What that gap is multiplied by by the end of the survival phase",
+		func(value: float) -> void: config.cannon_interval_ramp = value)
+	_tunable("sc_cannon_max_tier", float(config.cannon_max_tier),
+		"The biggest prop the cannon may fire, 1 to 4",
+		func(value: float) -> void: config.cannon_max_tier = clampi(int(value), 1, 4))
+	_tunable("sc_special_chance", config.special_round_chance,
+		"Chance in a hundred that a round is a special one",
+		func(value: float) -> void: config.special_round_chance = value)
+	_tunable("sc_chopper", 1.0 if config.chopper_enabled else 0.0,
+		"Whether a layout may carry a chopper",
+		func(value: float) -> void: config.chopper_enabled = value > 0.5)
+	_tunable("sc_weapons", float(config.weapons_granted),
+		"How many weapons a survivor is handed",
+		func(value: float) -> void: config.weapons_granted = clampi(int(value), 1, 8))
+	_tunable("sc_gravity", config.gravity, "Metres per second squared, for everything",
+		func(value: float) -> void: config.gravity = value)
+	_tunable("sc_min_players", float(config.minimum_players),
+		"How many players the server keeps in a round with stand-ins",
+		func(value: float) -> void: config.minimum_players = clampi(int(value), 0, 24))
+
+
+## A number as an operator would type it: `34`, not `34.000000`.
+##
+## [b]Not `%g`, which GDScript's format strings do not have.[/b] It is accepted by the parser
+## and fails at RUNTIME with "unsupported format character" — inside `_game_load`, which is
+## the one place in the module sequence that unwinds everything above it. The symptom in
+## game-buses-from-hell was a server whose netcode came up, logged that it was ready, and
+## then reported that the game would not load.
+static func _number(value: float) -> String:
+	return "%d" % int(round(value)) if is_equal_approx(value, round(value)) else "%.3f" % value
+
+
+## One cvar, its default taken from the configuration rather than written twice.
+##
+## [b]The default is the value the world was built with, and that is the whole point.[/b] A
+## cvar declared with a literal default is a second copy of a number that
+## `defaults < JSON < environment < argv` has already decided — so an operator who set
+## `SC_SURVIVAL_SECONDS=240` would see `sc_survival_seconds` report 120 and, worse, would
+## reset their own setting the moment anything wrote the value back.
+func _tunable(
+	cvar_name: String, current: float, description: String, apply: Callable
+) -> void:
+	var cvar := add_cvar(cvar_name, _number(current), description)
+
+	if cvar == null:
+		return
+
+	cvar.changed.connect(func(_old: String, _new: String) -> void:
+		apply.call(cvar.get_float())
+		log_info("a tunable changed", {"cvar": cvar_name, "now": cvar.get_string()})
+	)
+
+
+## [b]Nothing to undo.[/b] The commands are the module's own and [DotModule] removes them;
+## the netcode, the bridge and the roster are [DotGameModule]'s and it tears them down in
+## the reverse order it built them. The world is NOT this module's to free: it was in the
+## tree before the module loaded, and a server can unload and reload a game module without
+## the map going away, which is what `module reload` is for.
+func _game_unload() -> void:
+	_bot_ids.clear()
+
+
+## Keeps enough people in the round for there to be one.
+##
+## [b]Two sides with somebody on each, or nothing happens at all.[/b] An elimination round
+## ends the moment a side has nobody alive, and a side with nobody AT ALL satisfies that on
+## the first tick — so a server with one person on it would start a round, end it, start
+## another and end that, several times a second, for as long as nobody else joined. Every
+## one of those rounds is decided correctly, which is why nothing errors.
+##
+## A stand-in is removed the moment a person takes their place. They are here to make the
+## game exist, not to take the fun half from the people who came to play it.
+func _game_tick(_tick: int, delta: float) -> void:
+	_since_roster_check += delta
+
+	if _since_roster_check < ROSTER_INTERVAL:
+		return
+
+	_since_roster_check = 0.0
+	_keep_the_round_full()
+
+
+func _keep_the_round_full() -> void:
+	var world := game as ScGame
+
+	if world == null or bridge == null or _bots == null or not _bots.get_bool():
+		return
+
+	var wanted := world.config.minimum_players
+	var humans := 0
+
+	for id: StringName in world.players:
+		if not (world.players[id] as ScPlayer).is_bot:
+			humans += 1
+
+	# Forget any that have gone for some other reason — a round reset, an admin — so the
+	# count below is of stand-ins that actually exist.
+	for index in range(_bot_ids.size() - 1, -1, -1):
+		if not world.players.has(_bot_ids[index]):
+			_bot_ids.remove_at(index)
+
+	var short := wanted - humans - _bot_ids.size()
+
+	for _i in range(maxi(short, 0)):
+		var bot: ScPlayer = bridge.call("add_bot", _bot_name())
+
+		if bot == null:
+			break
+
+		_bot_ids.append(bot.player_id)
+
+	for _i in range(maxi(humans + _bot_ids.size() - wanted, 0)):
+		if _bot_ids.is_empty():
+			break
+
+		var leaving: StringName = _bot_ids.pop_back()
+		bridge.call("remove_player", ScNetBridge.session_of(leaving))
+
+
+## Names for the stand-ins, so a scoreboard of four of them is readable.
+static func _bot_name() -> String:
+	var names := PackedStringArray([
+		"Wobble", "Teeter", "Lurch", "Tilt", "Keel", "Sway", "Pitch", "Yaw",
+	])
+	return String(names[randi() % names.size()])
+
+
+## Joins the bridge's chat seam to the services layer's router.
+##
+## [b]Here rather than in either of them, because this is the only object that holds
+## both.[/b] The bridge knows what arrived on the wire and nothing about what a line means;
+## the services layer knows the rules and nothing about the wire. That separation is why a
+## client cannot send a line with somebody else's name on it: what crosses is a channel id
+## and a string, and everything else is decided on this side.
+func _wire_chat() -> void:
+	if bridge == null or services == null:
+		return
+
+	bridge.connect("say_requested", _on_say_requested)
+	services.connect("command_entered", _on_chat_command)
+
+
+## And the one game event the bridge cannot see for itself.
+##
+## `_arm` happens inside the world and the bridge is not listening to the world's weapons,
+## because a weapon is not a replicated entity here — it is a fact about a player that a
+## watcher's HUD wants to name. One signal is cheaper than a behaviour.
+func _wire_armed(world: ScGame) -> void:
+	if bridge == null:
+		return
+
+	world.player_armed.connect(func(player_id: StringName, weapon_id: StringName) -> void:
+		bridge.call("announce_armed", player_id, weapon_id)
+	)
+
+
+func _on_say_requested(peer_id: int, channel_id: StringName, text: String) -> void:
+	var said: DotResult = services.call("say", peer_id, channel_id, text)
+
+	if said.ok:
+		return
+
+	# Back to the one person who asked. A refusal broadcast would be a rate limit announced
+	# to the server.
+	bridge.call("notice", peer_id, said.error.message)
+
+
+## A `!command` typed into chat. Run through the console as the person who typed it.
+##
+## [b]As THEM, not as the server.[/b] `run_command_as_uid` builds a context with that
+## player's own flags, so `!kick` from somebody without the flag is refused by the same file
+## that refuses it at the console — rather than by this function having an opinion.
+func _on_chat_command(peer_id: int, command: String, args: PackedStringArray) -> void:
+	if server == null:
+		return
+
+	var session := server.session_of(peer_id)
+
+	if session == null:
+		return
+
+	for reply in server.run_command_as_uid(
+		session.uid(), command, args, DotCmdContext.Source.CHAT
+	):
+		bridge.call("notice", peer_id, reply)
+
+
+func _cmd_say(ctx: DotCmdContext) -> void:
+	var text := ctx.rest()
+
+	if text.strip_edges() == "":
+		ctx.reply("Say what?")
+		return
+
+	if services == null or services.get("chat") == null:
+		ctx.reply("This server has no chat.")
+		return
+
+	var announced: Variant = services.get("chat").call("announce", text, ScServices.CH_ALL)
+
+	if announced is DotResult and not (announced as DotResult).ok:
+		ctx.reply_error(announced)
+		return
+
+	ctx.reply("Said: %s" % text)
+
+
+func _cmd_status(ctx: DotCmdContext) -> void:
+	var world := game as ScGame
+
+	if world == null:
+		ctx.reply("No world.")
+		return
+
+	ctx.reply_lines(world.describe_lines())
+
+
+func _cmd_net(ctx: DotCmdContext) -> void:
+	if bridge == null:
+		ctx.reply("No bridge; this server is not replicating anything.")
+		return
+
+	ctx.reply_lines(bridge.call("describe_lines"))
+
+	if services != null:
+		ctx.reply_lines(services.call("describe_lines"))
+
+
+func _cmd_layouts(ctx: DotCmdContext) -> void:
+	var world := game as ScGame
+
+	if world == null:
+		ctx.reply("No world.")
+		return
+
+	var lines := PackedStringArray(["the layouts this server plays"])
+
+	for layout in ScLayouts.all(world.config):
+		lines.append("  %-11s w=%-5s %s" % [
+			String(layout.id), _number(layout.weight), layout.blurb,
+		])
+
+	lines.append("playing: %s" % (String(world.layout.id) if world.layout != null else "-"))
+	ctx.reply_lines(lines)
+
+
+func _cmd_specials(ctx: DotCmdContext) -> void:
+	var world := game as ScGame
+
+	if world == null:
+		ctx.reply("No world.")
+		return
+
+	var lines := PackedStringArray(["the specials this server may draw"])
+	var allowed: Dictionary = {}
+
+	for special in ScSpecials.available(world.config):
+		allowed[special.id] = true
+
+	for special in ScSpecials.all():
+		lines.append("  %-9s %-14s %s%s" % [
+			String(special.id),
+			special.display_name,
+			"" if allowed.has(special.id) else "(excluded) ",
+			special.blurb,
+		])
+
+	lines.append("in force: %s" % (world.special_line() if not world.active.is_plain() else "-"))
+	ctx.reply_lines(lines)
+
+
+func describe() -> Dictionary:
+	var out := super.describe()
+	var world := game as ScGame
+
+	if world != null:
+		out.merge({"round": world.round_number, "world": world.describe()}, true)
+
+	return out

@@ -1,0 +1,17 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://props/sc_prop_body.gd" id="body"]
+
+[node name="Monolith" type="RigidBody3D"]
+script = ExtResource("body")
+model_path = "res://assets/kenney/survival/resource-stone-large.glb"
+model_scale = 9.0
+model_drop = 0.080
+atlas_path = "res://assets/kenney/survival/Textures/colormap.png"
+shape_kind = 0
+shape_size = Vector3(3.4, 1.4, 3.0)
+shape_rotation = Vector3(0, 0, 0)
+can_sleep = false
+contact_monitor = true
+max_contacts_reported = 4
+continuous_cd = true

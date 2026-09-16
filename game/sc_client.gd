@@ -1,0 +1,738 @@
+extends Node
+
+const ScClientChat := preload("sc_client_chat.gd")
+const ScNetBridge := preload("net/sc_net_bridge.gd")
+const ScNetCommand := preload("net/sc_net_command.gd")
+
+const ScConfig := preload("sc_config.gd")
+const ScGame := preload("sc_game.gd")
+const ScHud := preload("sc_hud.gd")
+const ScPlayer := preload("sc_player.gd")
+const ScSpecials := preload("sc_specials.gd")
+
+## One local player, a camera and a HUD over an [ScGame] — offline, or against a server.
+##
+## [b]One client for both, and the offline half is not a demo mode.[/b] It is the same world
+## class with `authoritative` true and nothing else different: the same platforms, the same
+## cannon, the same rules. What changes is where the answers come from, and the whole of
+## that difference is [ScNetBridge]. A separate single-player build would be a second game to
+## keep in step, and this family has watched two copies of one thing drift more than once.
+##
+## [b]Which half runs is decided by whether there is a link in the registry.[/b] A dot-server
+## client publishes a [DotClientLink] under `dot_client_link` before the game scene loads; no
+## link means nobody connected us to anything, and the honest answer to that is a playable
+## field rather than an error. `--offline` forces it.
+##
+## [b]First person and third, and the motor does not know which.[/b] The camera is
+## presentation: the simulation is first-person, command-driven and predictable in both, and
+## what changes is where the camera sits. That is the line dot-player-controller draws
+## between its motor and its view, drawn again here — and it matters more in this game than
+## in most, because the thing a player most needs to see is the platform under their own
+## feet, which is the one thing a first-person camera cannot show them.
+
+const CHANNEL := "sc.client"
+
+## Where a dot-server client link publishes itself.
+const LINK_SERVICE := &"dot_client_link"
+
+## Where the camera sits behind the player in third person, in metres.
+const CHASE_BACK := 4.6
+const CHASE_UP := 2.1
+
+## Which key swaps the camera over. Physical, because the letter differs across layouts.
+const VIEW_KEY := KEY_F5
+
+@export var config_file: String = "user://cfg/smash-copter.json"
+
+## Play alone even when a link is available. `--offline`.
+@export var force_offline: bool = false
+
+## How many stand-ins the offline field gets, so a round can actually run.
+@export_range(0, 12, 1) var offline_bots: int = 3
+
+## Which view the camera starts in.
+@export var third_person: bool = false
+
+var game: ScGame = null
+var player: ScPlayer = null
+var camera: Camera3D = null
+var hud: ScHud = null
+var chat: ScClientChat = null
+
+## The weapons in this player's own hands, once the showdown has started.
+##
+## [b]Drawn, never decided.[/b] `authority` is false and every shot that matters is the
+## server's; what this rig is for is a view model that moves — a deploy, a reload, a recoil
+## kick — because a weapon that appears fully formed and never animates reads as a texture
+## stuck to the screen.
+var weapons: ZeeWeaponRig = null
+var view_model: ZeeViewModel = null
+
+var net: DotNetManager = null
+var bridge: ScNetBridge = null
+var link: Node = null
+
+var _offline: bool = true
+var _sampler: DotFpsSampler = null
+
+## Which session this client is, once the server has said. -1 until then, so nothing matches
+## before it does.
+var _watch_id: int = -1
+
+## Whether the pointer is ours. See [method _capture].
+var _captured: bool = false
+
+## The camera rig, in third person. Null in first.
+var _arm: SpringArm3D = null
+
+## Held buttons, read once a tick rather than sampled from an event queue.
+var _firing: bool = false
+var _alt: bool = false
+var _reloading: bool = false
+var _slot: int = 0
+
+
+func _ready() -> void:
+	var config := ScConfig.new()
+
+	# [b]`load_layered` on the CLIENT too.[/b] The family's `defaults < JSON < env < argv`
+	# chain is a convention, and a client that quietly skipped it would be one where every
+	# command-line flag worked against a dedicated server and did nothing at all offline.
+	var loaded := config.load_layered(config_file)
+
+	if not loaded.ok:
+		DotLog.warn(CHANNEL, "falling back to defaults", {"why": loaded.error.message})
+
+	link = DotRegistry.get_node_service(LINK_SERVICE)
+	_offline = force_offline \
+		or link == null \
+		or OS.get_cmdline_user_args().has("--offline")
+
+	game = ScGame.new()
+	game.name = "World"
+	game.config = config
+	game.authoritative = _offline
+	# A connected client's world is not what a module looks up, and registering it would mean
+	# a client and a server sharing a process fighting over the name — which is what every
+	# section of this game's own suite does.
+	game.register_service = _offline
+	game.tick_rate = int(
+		ProjectSettings.get_setting("physics/common/physics_ticks_per_second", 64)
+	)
+	add_child(game)
+
+	# The sampler lives HERE and not on the player, because on a connected client the local
+	# player does not exist yet: they arrive in a JOIN, several frames after the keyboard
+	# does.
+	_sampler = DotFpsSampler.new(ScPlayer.tunables_for(config, ScSpecials.Active.new()))
+	ScPlayer.register_actions(_sampler)
+
+	_build_hud()
+	_build_chat()
+
+	if _offline:
+		_start_offline()
+	else:
+		# [b]Here, in `_ready`, which runs INSIDE `DotClientLink._load_scene`.[/b] The link
+		# adds this scene and tells the server it has loaded on the next line, so the netcode
+		# is up before the server has been told there is anybody to send to — which is the
+		# order that leaves nothing to be missed.
+		DotLog.result(CHANNEL, "the netcode", _build_netcode())
+
+	# Desktop captures immediately; a browser cannot and must be asked. Pointer lock needs
+	# transient user activation — a real click — and `_ready` is the one moment in a client's
+	# life guaranteed not to have one. It is refused SILENTLY: the mode reads back as
+	# CAPTURED and the cursor sits on top of the game anyway.
+	#
+	# [b]`is_web()` and not a capability, which is the one place this game breaks the
+	# family's own rule on purpose.[/b] "Ask about capabilities, not platforms" holds because
+	# the mapping is not one-to-one — except here, where it is: pointer lock needing a
+	# gesture is a property of the browser security model rather than of anything
+	# [DotPlatform] can measure, and there is no capability to ask.
+	if not DotPlatform.is_web():
+		_capture()
+
+
+# --- Offline ---------------------------------------------------------------
+
+func _start_offline() -> void:
+	# Enough stand-ins for a round to exist at all: two sides with somebody on each, or the
+	# elimination rule ends every round on its first tick.
+	for i in range(offline_bots):
+		var bot := game.add_player(
+			StringName("bot%d" % i), "Stand-in %d" % (i + 1), (i % (game.config.team_count - 1)) + 2
+		)
+		bot.is_bot = true
+
+	_adopt(game.add_player(&"local", "You", 1, true))
+	game.start()
+
+	# No bridge: the box still opens and still echoes, because a chat box that does nothing
+	# at all reads as broken rather than as absent.
+	DotLog.result(CHANNEL, "chat, offline", chat.attach(null))
+
+
+# --- Connected -------------------------------------------------------------
+
+func _build_netcode() -> DotResult:
+	net = DotNetManager.new()
+	net.name = "Net"
+	net.is_server = false
+	net.local_peer_id = multiplayer.get_unique_id() if multiplayer != null else 2
+	net.auto_tick = false
+	# [b]Empty, and it is not tidiness.[/b] The manager reads a JSON file by default, so a
+	# client with a stale `user://dot_net.json` runs at a tick rate the game did not choose
+	# and nothing says so.
+	net.config_file = ""
+
+	var config := DotNetConfig.new()
+	config.tick_rate = game.tick_rate
+	config.snapshot_rate = ScGame.NET_SNAPSHOT_RATE
+	config.enable_prediction = true
+	# Off on a client: rewinding is what a server does to resolve somebody's shot, and a
+	# client resolves nobody's.
+	config.enable_lag_compensation = false
+	config.max_entities_per_snapshot = 192
+	# From the game, not written here. Two files holding this number is how another game in
+	# this family ended up decoding positions against a range the server never used.
+	config.world_extent = ScGame.NET_WORLD_EXTENT
+	net.config = config
+	add_child(net)
+
+	var started := net.setup()
+
+	if not started.ok:
+		return started
+
+	bridge = ScNetBridge.new()
+	bridge.name = "Bridge"
+	add_child(bridge)
+
+	var attached := bridge.attach(game, net)
+
+	if not attached.ok:
+		return attached
+
+	# Under the link, and NAMED the same as the server's — the name is the routing.
+	bridge.open_link(link)
+	net.messages.seal()
+
+	bridge.hello_received.connect(_on_hello)
+	bridge.roster_changed.connect(_on_roster_changed)
+	bridge.seat_changed.connect(_on_seat_changed)
+	bridge.phase_received.connect(_on_phase)
+	bridge.special_received.connect(_on_special)
+	bridge.round_changed.connect(_on_round)
+	bridge.death_received.connect(_on_death)
+	bridge.collapse_received.connect(_on_collapse)
+	bridge.armed_received.connect(_on_armed)
+	# [b]Where a refusal is drawn.[/b] The server answers a gagged or too-fast line with a
+	# notice to that one player, and a notice nothing draws is the server explaining itself
+	# to nobody — which is indistinguishable from chat being broken.
+	bridge.notice_received.connect(func(text: String) -> void:
+		if chat != null:
+			chat.notice(text)
+	)
+
+	# The one thing that writes an RTT sample. dot-net never touches a transport, so nothing
+	# in it can; without this the clock's input lead omits the flight time and past about
+	# thirty milliseconds every command arrives after its tick and is discarded as late.
+	if link != null and link.has_method("ping_ms"):
+		bridge.rtt_source = func() -> float:
+			return float(maxi(0, int(link.call("ping_ms"))))
+
+	DotLog.result(CHANNEL, "chat and voice", chat.attach(bridge))
+
+	# READY, and not one byte before the scene exists. dot-server's signon finishes and THEN
+	# the client builds this; anything the server sent in between landed on a node that did
+	# not exist and was lost, one "Node not found" per call.
+	if link != null and link.has_method("is_playing") and bool(link.call("is_playing")):
+		_say_ready()
+	elif link != null and link.has_signal("spawned"):
+		link.connect("spawned", _say_ready, CONNECT_ONE_SHOT)
+
+	return net.start()
+
+
+func _say_ready() -> void:
+	if bridge != null:
+		bridge.ask_ready()
+
+
+func _on_hello(session_id: int) -> void:
+	_watch_id = session_id
+	_adopt(game.players.get(ScNetBridge.player_key(session_id)))
+
+
+## A player arrived or changed. The one we are waiting for might be us.
+##
+## [b]Connected before anything can create a player rather than only checked on HELLO.[/b]
+## HELLO and JOIN are both reliable and ordered, so HELLO does arrive first — but "the
+## ordering happens to save us" is exactly the reasoning that put this bug in another game
+## here, and a check that costs nothing is cheaper than depending on it.
+func _on_roster_changed(session_id: int) -> void:
+	if session_id == _watch_id and player == null:
+		_adopt(game.players.get(ScNetBridge.player_key(session_id)))
+
+
+func _adopt(candidate: ScPlayer) -> void:
+	if candidate == null or player == candidate:
+		return
+
+	player = candidate
+	_build_camera()
+
+	if hud != null:
+		hud.bind(game, player)
+
+
+# --- What the server says --------------------------------------------------
+
+func _on_seat_changed(session_id: int, seated: bool) -> void:
+	if player == null or session_id != _watch_id:
+		return
+
+	# The camera goes up into the cab. [constant ScPlayer.EYE_HEIGHT] is where a person's
+	# eyes are when they are standing on a platform; a pilot's are above the instruments, and
+	# a camera left at standing height while the machine carries the body means flying with
+	# your chin on the floor.
+	_place_camera(seated)
+
+
+func _on_phase(phase: int) -> void:
+	match phase:
+		ScGame.Phase.HANDOVER:
+			hud.shout("CORNERS — hold your fire", 3.0)
+			_arm_locally()
+		ScGame.Phase.SHOWDOWN:
+			hud.shout("GO", 1.6)
+		ScGame.Phase.SURVIVAL:
+			hud.shout("STAY UP", 2.2)
+			_disarm_locally()
+
+
+func _on_special(_id: StringName, starting: bool, blurb: String) -> void:
+	if not starting:
+		return
+
+	hud.shout(blurb, 4.0)
+
+	if chat != null:
+		chat.say_locally(blurb, Color(0.98, 0.78, 0.33))
+
+	if game.effects != null:
+		var _flashed := game.effects.flash(&"special")
+
+
+func _on_round(number: int, began: bool, winner: int) -> void:
+	if began:
+		hud.shout("ROUND %d" % number, 2.4)
+		return
+
+	var team := "Nobody"
+
+	if winner >= 1 and winner <= ScGame.TEAM_NAMES.size():
+		team = ScGame.TEAM_NAMES[winner - 1]
+
+	hud.shout("%s wins" % team, 4.0)
+
+
+func _on_death(session_id: int, _by: int, why: StringName) -> void:
+	if chat == null:
+		return
+
+	var id := ScNetBridge.player_key(session_id)
+	var who: ScPlayer = game.players.get(id)
+	var name_of := who.display_name if who != null else String(id)
+
+	var line := "%s was shot" % name_of
+
+	match why:
+		ScGame.DIED_FELL:
+			line = "%s ran out of map" % name_of
+		ScGame.DIED_CRUSHED:
+			line = "%s was under it" % name_of
+		ScGame.DIED_BLAST:
+			line = "%s stood next to a barrel" % name_of
+
+	chat.say_locally(line, Color(0.80, 0.82, 0.86))
+
+
+## A platform went. The screen shakes if it was near enough to matter.
+##
+## [b]Distance-scaled, which is what makes it information rather than noise.[/b] A collapse
+## across the map is a thing you look at; one under the platform you are standing on is a
+## thing you react to, and the difference between them has to be felt rather than read.
+func _on_collapse(index: int, _why: StringName) -> void:
+	if game.effects == null or game.platforms == null:
+		return
+
+	var deck = game.platforms.deck_at(index)
+
+	if deck == null:
+		return
+
+	game.effects.viewer_position = camera.global_position if camera != null else Vector3.ZERO
+	game.effects.shake_at(&"collapse", deck.centre, 42.0)
+
+
+func _on_armed(session_id: int, weapon_id: StringName) -> void:
+	if session_id != _watch_id or chat == null:
+		return
+
+	chat.say_locally("You were handed a %s." % String(weapon_id), Color(0.86, 0.92, 0.80))
+
+
+# --- The weapons, drawn ----------------------------------------------------
+
+## Builds a view model for this player's own hands at the handover.
+##
+## [b]Drawn, never decided, and `authority` is false for exactly that reason.[/b] The server
+## owns every shot; what this is for is a gun that moves. A player whose weapon never
+## deploys, never reloads and never kicks is a player who cannot tell a weapon that is ready
+## from one that is not.
+func _arm_locally() -> void:
+	if weapons != null or player == null:
+		return
+
+	if camera == null:
+		_build_camera()
+
+	if camera == null:
+		return
+
+	view_model = ZeeViewModel.new()
+	view_model.name = "ViewModel"
+	camera.add_child(view_model)
+
+	weapons = ZeeWeaponRig.new()
+	weapons.name = "Weapons"
+	weapons.role = ZeeWeaponRig.Role.LOCAL
+	weapons.authority = false
+	weapons.tick_rate = game.tick_rate
+	weapons.view_model_ref = DotNodeRef.of_path(view_model.get_path())
+	weapons.player_ref = DotNodeRef.of_path(player.get_path())
+	player.add_child(weapons)
+
+	var ready_now := weapons.setup()
+
+	if not ready_now.ok:
+		DotLog.warn(CHANNEL, "the view model would not set up", {
+			"why": ready_now.error.message,
+		})
+		_disarm_locally()
+		return
+
+	# Everything, because the client is not told which weapons it drew until the server says
+	# so and a rig that carried nothing would have nothing to show. What decides what is
+	# actually in hand is the slot, which comes back in the ARMED event and in the player's
+	# own key presses.
+	var _given := weapons.give_everything()
+
+
+func _disarm_locally() -> void:
+	if weapons != null:
+		player.remove_child(weapons)
+		weapons.queue_free()
+		weapons = null
+
+	if view_model != null and is_instance_valid(view_model):
+		view_model.queue_free()
+		view_model = null
+
+
+# --- The camera ------------------------------------------------------------
+
+func _build_camera() -> void:
+	if camera != null or player == null:
+		return
+
+	camera = Camera3D.new()
+	camera.name = "Eye"
+	camera.fov = 92.0
+	camera.current = true
+
+	_place_camera(player.riding)
+
+
+## Puts the camera where this view mode wants it, rebuilding the rig if the mode changed.
+##
+## [b]A spring arm in third person and nothing in first.[/b] The arm is what stops the
+## camera going through a platform when the player backs up to the edge of one — which on
+## this map is every few seconds, and which without it is a view from inside the floor.
+func _place_camera(seated: bool) -> void:
+	if camera == null or player == null:
+		return
+
+	var eye := ScPlayer.EYE_HEIGHT + (0.9 if seated else 0.0)
+
+	if camera.get_parent() != null:
+		camera.get_parent().remove_child(camera)
+
+	if _arm != null and is_instance_valid(_arm):
+		_arm.queue_free()
+		_arm = null
+
+	if not third_person:
+		player.add_child(camera)
+		camera.position = Vector3(0.0, eye, 0.0)
+		camera.rotation = Vector3.ZERO
+		return
+
+	_arm = SpringArm3D.new()
+	_arm.name = "Chase"
+	_arm.spring_length = CHASE_BACK
+	# The player's own capsule is not what the arm should stop against, and the map is.
+	_arm.collision_mask = game.physics.collision_mask(&"player") if game.physics != null else 1
+	_arm.add_excluded_object(player.get_rid())
+	_arm.position = Vector3(0.0, eye + CHASE_UP - ScPlayer.EYE_HEIGHT, 0.0)
+	player.add_child(_arm)
+
+	_arm.add_child(camera)
+	camera.position = Vector3.ZERO
+	camera.rotation = Vector3.ZERO
+
+
+## Swaps the view. Presentation only: the simulation does not know which one is on.
+func toggle_view() -> void:
+	third_person = not third_person
+	_place_camera(player.riding if player != null else false)
+
+	if hud != null:
+		hud.shout("third person" if third_person else "first person", 1.2)
+
+
+func _build_hud() -> void:
+	hud = ScHud.new()
+	hud.name = "Hud"
+	add_child(hud)
+
+
+## The chat box, before the netcode and before any player exists.
+##
+## [b]Built in both halves and attached to the bridge afterwards.[/b] A box built after the
+## first line arrived would miss it — the backlog a joining player is sent is the first thing
+## the server says.
+func _build_chat() -> void:
+	chat = ScClientChat.new()
+	chat.name = "Chat"
+	add_child(chat)
+
+	# [b]Typing is not moving.[/b] The sampler is what turns keys into a command, so
+	# suspending it is what stops a player walking off a platform while telling somebody it
+	# is about to go — and, in this game, what stops a pilot flying with the letters of the
+	# word they are typing.
+	chat.typing_changed.connect(func(typing: bool) -> void:
+		if _sampler != null:
+			_sampler.suspended = typing
+
+		if player != null and player.sampler != null:
+			player.sampler.suspended = typing
+	)
+
+
+func _capture() -> void:
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	_captured = true
+
+
+func _release() -> void:
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	_captured = false
+
+
+# --- The frame -------------------------------------------------------------
+
+## The sampled command, on a connected client, once per tick the clock says has passed.
+##
+## [b]Offline this does nothing and the world ticks itself.[/b] The player samples inside
+## [method ScPlayer.simulate] there, which is the shape a single process wants; a connected
+## client cannot use it, because its local player has to be simulated by the PREDICTOR from
+## the same command that was sent, and a second sample would predict something different from
+## what the server was told.
+func _physics_process(delta: float) -> void:
+	if _offline:
+		_drive_offline(delta)
+		return
+
+	if net == null or not net.is_running() or bridge == null:
+		return
+
+	var move := _sampler.sample(delta) if _sampler != null else DotFpsCommand.new()
+	_stamp(move)
+
+	# The clock says how many ticks this frame is worth, which on a client whose engine runs
+	# at the server's rate is almost always exactly one.
+	var ticks := net.clock.advance(delta)
+
+	for _i in range(ticks):
+		if not net.clock.is_synced():
+			continue
+
+		bridge.client_tick(net.clock.input_tick(), move, _slot)
+
+	_drive_view_model(move)
+
+
+## Offline the world samples for itself; what is left is the buttons this file owns.
+func _drive_offline(_delta: float) -> void:
+	if player == null or player.sampler == null:
+		return
+
+	var pending := player.controller.current_command
+
+	if pending != null:
+		_stamp(pending)
+		player.wanted_slot = _slot
+
+	_drive_view_model(pending)
+
+
+## Puts this game's three buttons and the slot onto a command.
+func _stamp(command: DotFpsCommand) -> void:
+	if command == null:
+		return
+
+	command.set_button(ScNetCommand.BUTTON_FIRE, _firing)
+	command.set_button(ScNetCommand.BUTTON_ALT, _alt)
+	command.set_button(ScNetCommand.BUTTON_RELOAD, _reloading)
+
+
+func _drive_view_model(command: DotFpsCommand) -> void:
+	if weapons == null or player == null:
+		return
+
+	var weapon_command := DotWeaponCommand.new()
+
+	if command != null:
+		weapon_command.set_button(
+			DotWeaponCommand.BUTTON_ATTACK, command.is_pressed(ScNetCommand.BUTTON_FIRE)
+		)
+		weapon_command.set_button(
+			DotWeaponCommand.BUTTON_ALT, command.is_pressed(ScNetCommand.BUTTON_ALT)
+		)
+		weapon_command.set_button(
+			DotWeaponCommand.BUTTON_RELOAD, command.is_pressed(ScNetCommand.BUTTON_RELOAD)
+		)
+		weapon_command.yaw = command.yaw
+		weapon_command.pitch = command.pitch
+
+	weapon_command.slot = _slot
+
+	var _outcome := weapons.simulate_tick(weapon_command, game.round_number * 100000 + Engine.get_physics_frames())
+
+
+func _process(delta: float) -> void:
+	if camera == null or player == null:
+		return
+
+	# Drawn every FRAME from the controller's own interpolated view, not once per tick.
+	# Another game in this family measured what the other way costs: a client stepping physics
+	# at one rate and drawing at another advances the camera in bursts, which is a 47% change
+	# in apparent speed several times a second and reads as "the game is jittery" with every
+	# simulated number correct.
+	var state := player.controller.state
+	var pitch := deg_to_rad(state.pitch)
+	var yaw := deg_to_rad(state.yaw)
+
+	if _arm != null and is_instance_valid(_arm):
+		_arm.rotation = Vector3(pitch, yaw, 0.0)
+	else:
+		camera.rotation = Vector3(pitch, yaw, 0.0)
+
+	if weapons != null:
+		var speed := Vector2(state.velocity.x, state.velocity.z).length()
+		weapons.drive_view(
+			Vector2(state.yaw, state.pitch),
+			speed,
+			state.mode != DotFpsState.Mode.AIR,
+			state.crouch_fraction > 0.5
+		)
+
+	if game.effects != null:
+		game.effects.viewer_position = camera.global_position
+		game.effects.advance(delta)
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.pressed and not _captured:
+		# Handled BEFORE the player guard below, because somebody clicks while the world is
+		# still loading more often than not, and a click swallowed for want of a player is a
+		# click that never captures anything.
+		_capture()
+		return
+
+	if event.is_action_pressed("ui_cancel"):
+		# Releases, never toggles. A browser exits pointer lock on Escape itself and then
+		# refuses to re-enter for about a second, so a toggle bound to it does nothing every
+		# other press.
+		_release()
+		return
+
+	if event is InputEventKey and (event as InputEventKey).pressed:
+		var key := event as InputEventKey
+
+		if key.physical_keycode == VIEW_KEY:
+			toggle_view()
+			return
+
+		# The slots. One to five, which is what the pack uses.
+		if key.physical_keycode >= KEY_1 and key.physical_keycode <= KEY_5:
+			_slot = key.physical_keycode - KEY_1 + 1
+			return
+
+		if key.physical_keycode == KEY_R:
+			_reloading = true
+			return
+
+		if key.physical_keycode == KEY_E:
+			# Getting into a chopper is a REQUEST rather than a button: it happens once, it
+			# must not be lost, and it is resolved against where the server thinks you are
+			# rather than where you were a round trip ago.
+			if bridge != null:
+				bridge.ask_board()
+			elif game != null and player != null:
+				var _boarded := game.try_board(player.player_id)
+			return
+
+	if event is InputEventKey and not (event as InputEventKey).pressed:
+		if (event as InputEventKey).physical_keycode == KEY_R:
+			_reloading = false
+
+	if event is InputEventMouseButton:
+		var button := event as InputEventMouseButton
+
+		if button.button_index == MOUSE_BUTTON_LEFT:
+			_firing = button.pressed
+		elif button.button_index == MOUSE_BUTTON_RIGHT:
+			_alt = button.pressed
+
+	if player == null:
+		return
+
+	if event is InputEventMouseMotion and _captured:
+		if _offline and player.sampler != null:
+			player.sampler.handle_event(event)
+		elif _sampler != null:
+			_sampler.handle_event(event)
+
+
+func describe() -> Dictionary:
+	var out := {
+		"offline": _offline,
+		"session": _watch_id,
+		"player": player != null,
+		"view": "third" if third_person else "first",
+		"armed": weapons != null,
+	}
+
+	if bridge != null:
+		out["bridge"] = bridge.describe()
+
+	if chat != null:
+		out["chat"] = chat.describe()
+
+	if game != null:
+		out["world"] = game.describe()
+
+	return out

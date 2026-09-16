@@ -1,0 +1,1586 @@
+extends Node
+
+const ScCopterNet := preload("sc_copter_net.gd")
+const ScEvent := preload("sc_event.gd")
+const ScEvents := preload("sc_events.gd")
+const ScNetCommand := preload("sc_net_command.gd")
+const ScNetLink := preload("sc_net_link.gd")
+const ScPlatformNet := preload("sc_platform_net.gd")
+const ScPlayerNet := preload("sc_player_net.gd")
+const ScPropNet := preload("sc_prop_net.gd")
+const ScRequest := preload("sc_request.gd")
+
+const ScContent := preload("../sc_content.gd")
+const ScGame := preload("../sc_game.gd")
+const ScPlatforms := preload("../sc_platforms.gd")
+const ScPlayer := preload("../sc_player.gd")
+
+## Joins an [ScGame] to a [DotNetManager]. The netcode seam, and the only file in this
+## project that names both.
+##
+## [codeblock]
+## # server
+## bridge.attach(game, net)          # dot-game's DotGameNetcode does this
+## bridge.open_link(server)          # and this
+## bridge.add_player(peer_id, userid, "Ada")
+## bridge.server_tick(tick)          # instead of the game's own loop
+##
+## # client
+## bridge.attach(game, net)
+## bridge.open_link(client_link)
+## bridge.ask_ready()
+## bridge.client_tick(tick, command, slot)
+## [/codeblock]
+##
+## [b]What is predicted, and in this game the answer is one thing.[/b] A player's own
+## movement is predicted, like every other first-person game in this family. The platforms,
+## the props and the choppers are all server-authoritative and NOT predicted — and the
+## platforms are the interesting case, because they are the FLOOR. dot-props refuses to
+## predict a crate because two solvers diverge; a floor that diverged would be a player
+## falling through a platform their own machine says is holding them up, which is the worst
+## possible version of that bug. So the server decides every lean and every client is told.
+##
+## [b]The ordering is the other half of the file.[/b] dot-net drives simulation per entity;
+## this game's tick is a whole-world property — every player moves, then the platforms are
+## loaded and stepped, then what landed on what is decided. [method ensure_game_ticked]
+## reconciles the two: the first behaviour through on a tick runs the whole world and the
+## rest find it done.
+
+const CHANNEL := "sc.net"
+
+## Bytes of acknowledgement in front of every input packet. [method DotNetManager.encode_ack].
+const ACK_BYTES := 4
+
+## How often the round clock and the numbers behind it go out, in ticks.
+##
+## [b]Twice a second, not per tick and not per snapshot.[/b] What it carries changes when a
+## platform goes or a second passes, and a client told sixty-four times a second would be
+## paying for sixty-two copies of the same six numbers. The clock itself is advanced on the
+## client between messages — see [method _apply_clock].
+const CLOCK_EVERY := 32
+
+## The client has been told who it is. [param player_id] is the session id.
+signal hello_received(player_id: int)
+
+## Somebody joined, left or changed sides. Client side; the HUD and a scoreboard read it.
+signal roster_changed(player_id: int)
+
+## A round began or ended.
+signal round_changed(number: int, began: bool, winner: int)
+
+## The round changed half. Client side.
+signal phase_received(phase: int)
+
+## Something strange started or stopped.
+signal special_received(special_id: StringName, starting: bool, blurb: String)
+
+## Somebody died, and what did it.
+signal death_received(player_id: int, by: int, why: StringName)
+
+## A platform came off its pillar. What a client shakes the screen for.
+signal collapse_received(index: int, why: StringName)
+
+## A barrel went off, where, and how far it reached.
+signal blast_received(at: Vector3, radius: float)
+
+## A player got into or out of a chopper. The camera and the HUD read it.
+signal seat_changed(player_id: int, seated: bool)
+
+## A survivor was handed a weapon. The HUD names it.
+signal armed_received(player_id: int, weapon_id: StringName)
+
+signal notice_received(text: String)
+
+## Somebody pressed Enter. Server side, and the only thing this bridge does with chat.
+##
+## [b]The bridge carries chat and decides nothing about it.[/b] Who may say what, on which
+## channel, how often and who hears it are [DotChatRouter]'s, and the router is the services
+## layer's.
+signal say_requested(peer_id: int, channel_id: StringName, text: String)
+
+## A voice frame arrived. Server side; the payload is unparsed and must not be trusted —
+## [method DotVoiceRouter.relay] is what stamps the speaker, from the peer id below.
+signal voice_requested(peer_id: int, payload: PackedByteArray)
+
+## Client side: one routed line, and one voice frame.
+signal chat_received(wire: Dictionary)
+signal voice_arrived(payload: PackedByteArray)
+
+var game: ScGame = null
+var net: DotNetManager = null
+var link: ScNetLink = null
+
+## Which session this process is. Zero on a server.
+var local_player_id: int = 0
+
+## Where the clock learns how long the link is, in milliseconds.
+##
+## dot-net never touches a transport and cannot measure it; dot-server's heartbeat already
+## does ([method DotClientLink.ping_ms]). A client that feeds nothing has a clock that
+## assumes an instant connection and stamps every command for a tick the server has already
+## simulated — and the symptom is every command being discarded as late. Two games in this
+## family shipped without a sample and read a median of an empty set.
+var rtt_source: Callable = Callable()
+
+## Where a voice frame goes on the server. Assigned by [DotGameModule] to the services
+## layer's `relay_voice`, because the bridge is the only thing that names both ends.
+var voice_relay_fn: Callable = Callable()
+
+var _entities: Node = null
+
+## session id -> [ScPlayerNet].
+var _behaviours: Dictionary = {}
+
+## The next session id handed to somebody the world made itself.
+##
+## [b]Well above anything dot-server will issue, and a bot needs one at all because of how a
+## player id is written.[/b] Every id on the wire is `u<session>`, and a player called `bot`
+## parses back to session ZERO — so two bots are one entry in [member _behaviours], and
+## their JOIN carries a player id that is also dot-net's broadcast address.
+const FIRST_BOT_SESSION := 900000
+
+var _next_bot_session: int = FIRST_BOT_SESSION
+
+## net id -> the behaviour replicating that body, on BOTH ends.
+##
+## [b]Keyed by net id rather than by instance id, and that is what makes the tick loop the
+## same on both ends.[/b] A prop instance id and a vehicle instance id are two counters in
+## two addons that both start at 1, so a table keyed on either holds two different things
+## under one key the moment a chopper and a crate exist together.
+var _bodies: Dictionary = {}
+
+## Server only: `"p<instance>"`, `"v<instance>"` or `"d<index>"` -> net id, so a removal can
+## find what to unregister.
+var _net_of: Dictionary = {}
+
+var _player_of_peer: Dictionary = {}
+var _peer_of_player: Dictionary = {}
+var _ready_peers: Dictionary = {}
+
+var _tick: int = 0
+var _game_ticked_for: int = -1
+var _client_ticked_for: int = -1
+
+## The layout the client was last told about, so it can be re-sent to a late joiner.
+var _layout_body: PackedByteArray = PackedByteArray()
+
+
+# --- Wiring ----------------------------------------------------------------
+
+## [param p_game] and [param p_net], in the shape [DotGameNetcode] calls it.
+func attach(p_game: Object, p_net: DotNetManager) -> DotResult:
+	var world := p_game as ScGame
+
+	if world == null or p_net == null:
+		return DotResult.fail(DotError.CODE_INVALID, "A bridge needs a world and a manager.")
+
+	if world.authoritative != p_net.is_server:
+		return DotResult.fail(
+			DotError.CODE_STATE,
+			"The world and the manager disagree about who is authoritative.",
+			"world=%s net.is_server=%s" % [world.authoritative, p_net.is_server]
+		)
+
+	game = world
+	net = p_net
+
+	_entities = Node.new()
+	_entities.name = "Entities"
+	add_child(_entities)
+
+	net.send_fn = _send
+
+	var event := net.messages.register(
+		ScEvent.NAME, ScEvent,
+		DotNetMessage.Delivery.RELIABLE, DotNetMessage.Direction.TO_CLIENT
+	)
+
+	if not event.ok:
+		return event
+
+	var request := net.messages.register(
+		ScRequest.NAME, ScRequest,
+		DotNetMessage.Delivery.RELIABLE, DotNetMessage.Direction.TO_SERVER
+	)
+
+	if not request.ok:
+		return request
+
+	net.messages.on(ScEvent.NAME, _on_event)
+	net.messages.on(ScRequest.NAME, _on_request)
+
+	# Both ends. The server's tick is `server_tick` and the client's is `client_tick`, which
+	# simulates what it predicts and leaves the rest to interpolation. A world still running
+	# its own `_physics_process` would move every player twice.
+	game.external_tick = true
+
+	if net.is_server:
+		game.player_added.connect(_on_player_added)
+		game.player_removed.connect(_on_player_removed)
+		game.world_clearing.connect(_on_world_clearing)
+		game.world_rebuilt.connect(_on_world_rebuilt)
+		game.props.spawned.connect(_on_prop_spawned)
+		game.props.removed.connect(_on_prop_removed)
+		game.vehicles.spawned.connect(_on_vehicle_spawned)
+		game.vehicles.removed.connect(_on_vehicle_removed)
+		game.ride.entered.connect(_on_ride_entered)
+		game.ride.exited.connect(_on_ride_exited)
+		game.round_began.connect(_on_round_began)
+		game.round_over.connect(_on_round_over)
+		game.phase_changed.connect(_on_phase_changed)
+		game.special_changed.connect(_on_special_changed)
+		game.player_died.connect(_on_player_died)
+		game.platform_collapsed.connect(_on_platform_collapsed)
+		game.blast.connect(_on_blast)
+
+	return DotResult.success(true)
+
+
+## Opens the link under [param parent], whose NAME is half the RPC routing.
+##
+## A [DotServer] on one end and a [DotClientLink] on the other, both called `Server`, with
+## this node under each: Godot routes an RPC by the receiver's node path, so a link opened
+## anywhere else is addressed by a path the other end does not have and every message lands
+## nowhere, with no error on either side.
+func open_link(parent: Node) -> void:
+	if parent == null or link != null:
+		return
+
+	link = ScNetLink.attached_to(parent, self, net != null and net.is_server)
+
+
+## How every dot-net message reaches a peer.
+##
+## [b]Routed by DELIVERY, not by kind.[/b] Snapshots are unreliable and go on the snapshot
+## call; everything else is reliable, and which reliable call it is depends on which end is
+## sending — the server has events, the client has requests. Sending them all as events
+## works on a server and silently drops every client request, which is a client that
+## connects, draws, and can never ask for anything.
+func _send(peer_id: int, payload: PackedByteArray, delivery: int) -> void:
+	if link == null:
+		return
+
+	if delivery == DotNetMessage.Delivery.UNRELIABLE:
+		link.send_snapshot(peer_id, payload)
+	elif net.is_server:
+		link.send_event(peer_id, payload)
+	else:
+		link.send_request(payload)
+
+
+# --- Identity --------------------------------------------------------------
+
+static func player_key(session_id: int) -> StringName:
+	return StringName("u%d" % session_id)
+
+
+static func session_of(id: StringName) -> int:
+	return String(id).trim_prefix("u").to_int()
+
+
+func peer_for_player(session_id: int) -> int:
+	return int(_peer_of_player.get(session_id, 0))
+
+
+func player_for_peer(peer_id: int) -> int:
+	return int(_player_of_peer.get(peer_id, 0))
+
+
+# --- Server: players -------------------------------------------------------
+
+## Puts a connected peer into the game. What [DotGameRoster] calls.
+func add_player(peer_id: int, session_id: int, display_name: String) -> DotResult:
+	if net == null or not net.is_server:
+		return DotResult.fail(DotError.CODE_FORBIDDEN, "Only the server adds players.")
+
+	if peer_id > 0:
+		# FIRST, because `game.add_player` emits `player_added` and the handler has to be
+		# able to find which peer this player belongs to.
+		_player_of_peer[peer_id] = session_id
+		_peer_of_player[session_id] = peer_id
+
+	var player := game.add_player(player_key(session_id), display_name)
+
+	if player == null:
+		_player_of_peer.erase(peer_id)
+		_peer_of_player.erase(session_id)
+		return DotResult.fail(DotError.CODE_STATE, "The game refused the player.")
+
+	return DotResult.success(player)
+
+
+## Somebody the world drives itself: a stand-in, or a test's player.
+##
+## [b]The same entity a peer gets, with a peer id of zero.[/b] A bot is replicated, scored
+## and crushed exactly like a person — what it does not have is a socket — and that is the
+## whole of the difference.
+func add_bot(display_name: String, team: int = 0) -> ScPlayer:
+	if net == null or not net.is_server or game == null:
+		return null
+
+	var session_id := _next_bot_session
+	_next_bot_session += 1
+
+	var player := game.add_player(player_key(session_id), display_name, team)
+
+	if player == null:
+		return null
+
+	player.is_bot = true
+	return player
+
+
+func remove_peer(peer_id: int) -> void:
+	if _player_of_peer.has(peer_id):
+		remove_player(int(_player_of_peer[peer_id]))
+
+
+## Removes a player whether or not a peer is behind it — a bot has none.
+func remove_player(session_id: int) -> void:
+	if not _behaviours.has(session_id):
+		return
+
+	var peer_id := peer_for_player(session_id)
+	var was_ready := _ready_peers.has(peer_id)
+
+	_player_of_peer.erase(peer_id)
+	_peer_of_player.erase(session_id)
+	_ready_peers.erase(peer_id)
+
+	# Released BEFORE the game is told: `game.remove_player` emits `player_removed`, which
+	# `_on_player_removed` answers by releasing the entity and broadcasting the LEAVE.
+	# Releasing first empties `_behaviours`, so that handler finds nothing and this stays
+	# the one place a leaving player is announced.
+	_release_entity(session_id)
+	game.remove_player(player_key(session_id))
+
+	if net != null and peer_id > 0:
+		if was_ready:
+			net.remove_peer(peer_id)
+
+		if net.interest != null:
+			net.interest.forget_peer(peer_id)
+
+	_broadcast(ScEvents.Kind.LEAVE, ScEvents.write_player(session_id))
+	roster_changed.emit(session_id)
+
+
+func _on_player_added(id: StringName) -> void:
+	if net == null or not net.is_server:
+		return
+
+	var session_id := session_of(id)
+
+	if _behaviours.has(session_id):
+		return
+
+	# [b]Every id on the wire is `u<session>`, and anything else parses back to zero.[/b] A
+	# world that added a player called `bot` would replicate it under session 0 — which is
+	# also dot-net's broadcast address — and a second one would silently replace the first
+	# in this table. Refused with a line rather than accepted quietly: the symptom otherwise
+	# is one stand-in playing and the other standing still for ever.
+	if player_key(session_id) != id:
+		DotLog.warn(CHANNEL, "a player whose id is not a session key is not replicated", {
+			"id": String(id), "hint": "use add_bot() or ScNetBridge.player_key()",
+		})
+		return
+
+	var player: ScPlayer = game.players.get(id)
+
+	if player == null:
+		return
+
+	var identity := _build_entity(player, peer_for_player(session_id))
+	var registered := net.registry.register(identity, 0, net.clock.tick, net.config)
+
+	if not registered.ok:
+		DotLog.warn(CHANNEL, "could not replicate a player", {"error": str(registered.error)})
+		return
+
+	_broadcast(ScEvents.Kind.JOIN, _join_body(session_id))
+	roster_changed.emit(session_id)
+
+
+func _on_player_removed(id: StringName) -> void:
+	var session_id := session_of(id)
+
+	if _behaviours.has(session_id):
+		# The game removed them itself; the entity and the LEAVE are still ours.
+		_release_entity(session_id)
+		_broadcast(ScEvents.Kind.LEAVE, ScEvents.write_player(session_id))
+		roster_changed.emit(session_id)
+
+
+func _build_entity(player: ScPlayer, peer_id: int) -> DotNetIdentity:
+	# The behaviour is added BEFORE the identity: [DotNetIdentity] collects behaviours in
+	# `_ready` by walking the subtree, and one added afterwards would never be found.
+	var behaviour := ScPlayerNet.new()
+	behaviour.name = "Net"
+	behaviour.player = player
+	behaviour.bridge = self
+	player.add_child(behaviour)
+
+	var identity := DotNetIdentity.new()
+	identity.name = "Identity"
+	identity.owner_peer_id = peer_id
+	# SHARED: the server corrects, the owner predicts. SERVER would put a player's own
+	# movement a round trip behind their keys, which in this game is the difference between
+	# stepping off a platform and being told you already did.
+	identity.authority = DotNetIdentity.Authority.SHARED
+	# [b]Always, and the map is why.[/b] Interest management is a saving where most players
+	# are out of sight; this one is a field of platforms in open air with nothing taller
+	# than a person on it, so everybody can see everybody and culling would only ever
+	# produce a player who vanishes in mid-air.
+	identity.always_relevant = true
+	player.add_child(identity)
+
+	_behaviours[session_of(player.player_id)] = behaviour
+	return identity
+
+
+func _release_entity(session_id: int) -> void:
+	var behaviour: ScPlayerNet = _behaviours.get(session_id)
+	_behaviours.erase(session_id)
+
+	if behaviour == null or behaviour.identity == null or net == null:
+		return
+
+	net.registry.unregister(behaviour.identity.net_id)
+
+
+# --- Server: the world -----------------------------------------------------
+
+## A whole new field of platforms. Announced, then replicated one entity each.
+##
+## [b]The description goes out before the entities do.[/b] A client builds its own field
+## from the cell list and then learns which net id moves which index; the other order would
+## have a snapshot arriving for a platform the client has not built, which dot-net would
+## register against nothing and never mention again.
+## Lets go of every platform, before the field they live on is freed.
+##
+## A platform's behaviour is a child of the platform's own body, so clearing the field frees
+## them — and an entry left in [member _bodies] is a freed instance every later `pull` tries
+## to assign to a typed local.
+func _on_world_clearing() -> void:
+	if net == null or not net.is_server:
+		return
+
+	for key: String in _net_of.keys():
+		if key.begins_with("d"):
+			_forget_body(key, ScPlatforms.WHY_ROUND)
+
+
+func _on_world_rebuilt() -> void:
+	if net == null or not net.is_server or game.platforms == null:
+		return
+
+	_layout_body = _describe_layout()
+	_broadcast(ScEvents.Kind.LAYOUT, _layout_body)
+
+	for index in range(game.platforms.count()):
+		_replicate_platform(index)
+
+
+func _describe_layout() -> PackedByteArray:
+	var layout := game.layout
+
+	return ScEvents.write_layout(
+		layout.id if layout != null else &"full",
+		game.config.columns,
+		game.config.rows,
+		game.config.column_pitch,
+		game.config.row_pitch,
+		game.config.platform_size,
+		game.config.deck_height,
+		layout.pitch_scale if layout != null else 1.0,
+		layout.stiffness_scale if layout != null else 1.0,
+		game.platforms.cells()
+	)
+
+
+func _replicate_platform(index: int) -> void:
+	var deck := game.platforms.deck_at(index)
+
+	if deck == null or deck.body == null:
+		return
+
+	var behaviour := ScPlatformNet.new()
+	behaviour.name = "Net"
+	behaviour.index = index
+	behaviour.platforms = game.platforms
+	deck.body.add_child(behaviour)
+
+	var identity := DotNetIdentity.new()
+	identity.name = "Identity"
+	identity.owner_peer_id = 0
+	identity.authority = DotNetIdentity.Authority.SERVER
+	identity.always_relevant = true
+	deck.body.add_child(identity)
+
+	var registered := net.registry.register(identity, 0, net.clock.tick, net.config)
+
+	if not registered.ok:
+		DotLog.warn(CHANNEL, "could not replicate a platform", {
+			"index": index, "error": str(registered.error),
+		})
+		return
+
+	_bodies[identity.net_id] = behaviour
+	_net_of["d%d" % index] = identity.net_id
+	behaviour.pull()
+
+	_broadcast(ScEvents.Kind.PLATFORM, ScEvents.write_platform(identity.net_id, index))
+
+
+## Every prop the world puts out becomes a replicated entity.
+##
+## [b]Announced reliably AND replicated by snapshot, and it needs both.[/b] The snapshot
+## moves it; the event says what it IS, because a client cannot build a barrel from a
+## position. A spawner factory would have to name a script, and this game's content is named
+## by PATH precisely so a dot-cloud pack can deliver it — a mounted pack's `class_name`
+## globals are not registered in the host.
+func _on_prop_spawned(prop: DotPropInstance) -> void:
+	if net == null or not net.is_server or prop == null or prop.node == null:
+		return
+
+	var body := prop.node as Node3D
+
+	if body == null:
+		return
+
+	var behaviour := ScPropNet.new()
+	behaviour.name = "Net"
+	behaviour.prop = body
+	body.add_child(behaviour)
+
+	var net_id := _replicate_body(behaviour, body)
+
+	if net_id == 0:
+		return
+
+	_net_of["p%d" % prop.instance_id] = net_id
+	behaviour.pull()
+
+	_broadcast(ScEvents.Kind.PROP, ScEvents.write_prop(
+		net_id, prop.def.id, body.global_position, false
+	))
+
+
+func _on_prop_removed(prop: DotPropInstance, reason: StringName) -> void:
+	_forget_body("p%d" % prop.instance_id, reason)
+
+
+func _on_vehicle_spawned(vehicle: DotVehicleInstance) -> void:
+	if net == null or not net.is_server or vehicle == null:
+		return
+
+	var body := vehicle.body()
+
+	if body == null:
+		return
+
+	var behaviour := ScCopterNet.new()
+	behaviour.name = "Net"
+	behaviour.prop = body
+	behaviour.vehicle = vehicle
+	body.add_child(behaviour)
+
+	var net_id := _replicate_body(behaviour, body)
+
+	if net_id == 0:
+		return
+
+	_net_of["v%d" % vehicle.instance_id] = net_id
+	behaviour.pull()
+
+	_broadcast(ScEvents.Kind.PROP, ScEvents.write_prop(
+		net_id, vehicle.def.id, body.global_position, true
+	))
+
+
+func _on_vehicle_removed(vehicle: DotVehicleInstance, reason: StringName) -> void:
+	_forget_body("v%d" % vehicle.instance_id, reason)
+
+
+## The half a prop, a chopper and a platform do identically.
+func _replicate_body(behaviour: DotNetBehaviour, body: Node3D) -> int:
+	var identity := DotNetIdentity.new()
+	identity.name = "Identity"
+	identity.owner_peer_id = 0
+	# SERVER, not SHARED: nothing about a rigid body is predicted here, so there is no owner
+	# to share with.
+	identity.authority = DotNetIdentity.Authority.SERVER
+	identity.always_relevant = true
+	body.add_child(identity)
+
+	var registered := net.registry.register(identity, 0, net.clock.tick, net.config)
+
+	if not registered.ok:
+		DotLog.warn(CHANNEL, "could not replicate a body", {"error": str(registered.error)})
+		return 0
+
+	_bodies[identity.net_id] = behaviour
+	return identity.net_id
+
+
+func _forget_body(key: String, reason: StringName) -> void:
+	if net == null or not net.is_server or not _net_of.has(key):
+		return
+
+	var net_id := int(_net_of[key])
+	_net_of.erase(key)
+	_bodies.erase(net_id)
+
+	net.registry.unregister(net_id)
+	_broadcast(ScEvents.Kind.PROP_GONE, ScEvents.write_prop_gone(net_id, reason))
+
+
+func net_id_of_node(node: Node) -> int:
+	if node == null:
+		return 0
+
+	for net_id in _bodies:
+		var behaviour: ScPropNet = _bodies[net_id] as ScPropNet
+
+		if behaviour != null and behaviour.prop == node:
+			return int(net_id)
+
+	return 0
+
+
+# --- Server: the round -----------------------------------------------------
+
+func _on_ride_entered(
+	vehicle: DotVehicleInstance, rider_id: StringName, _seat: DotVehicleSeat
+) -> void:
+	_announce_seat(vehicle, rider_id, true)
+
+
+func _on_ride_exited(
+	vehicle: DotVehicleInstance, rider_id: StringName, _seat: DotVehicleSeat, _at: Vector3
+) -> void:
+	_announce_seat(vehicle, rider_id, false)
+
+
+func _announce_seat(vehicle: DotVehicleInstance, rider_id: StringName, seated: bool) -> void:
+	if net == null or not net.is_server:
+		return
+
+	_broadcast(ScEvents.Kind.SEAT, ScEvents.write_seat(
+		session_of(rider_id), net_id_of_node(vehicle.body()), seated
+	))
+
+
+func _on_round_began(number: int, _layout_id: StringName) -> void:
+	_broadcast(ScEvents.Kind.ROUND, ScEvents.write_round(number, true, 0))
+
+
+func _on_round_over(number: int, winner: int) -> void:
+	_broadcast(ScEvents.Kind.ROUND, ScEvents.write_round(number, false, winner))
+
+
+func _on_phase_changed(phase: int) -> void:
+	_broadcast(ScEvents.Kind.PHASE, ScEvents.write_phase(phase))
+
+
+func _on_special_changed(id: StringName, starting: bool, blurb: String) -> void:
+	_broadcast(ScEvents.Kind.SPECIAL, ScEvents.write_special(id, starting, blurb))
+
+
+func _on_player_died(player_id: StringName, by: StringName, why: StringName) -> void:
+	_broadcast(ScEvents.Kind.DEATH, ScEvents.write_death(
+		session_of(player_id), session_of(by) if by != &"" else 0, why
+	))
+
+
+func _on_platform_collapsed(index: int, why: StringName) -> void:
+	_broadcast(ScEvents.Kind.COLLAPSE, ScEvents.write_collapse(index, why))
+
+
+func _on_blast(at: Vector3, radius: float) -> void:
+	_broadcast(ScEvents.Kind.BLAST, ScEvents.write_blast(at, radius))
+
+
+## Says what a survivor was handed. Called by the game through the module.
+func announce_armed(player_id: StringName, weapon_id: StringName) -> void:
+	_broadcast(ScEvents.Kind.ARMED, ScEvents.write_armed(session_of(player_id), weapon_id))
+
+
+# --- Server: the tick ------------------------------------------------------
+
+func server_tick(tick: int) -> void:
+	_tick = tick
+	_game_ticked_for = -1
+
+	if net != null:
+		net.server_tick(tick)
+
+	# Belt and braces: `net.server_tick` drives the entities, and the first player behaviour
+	# through calls `ensure_game_ticked`. A server with nobody on it has no behaviours at
+	# all, and a world that only ticked when somebody was connected is a server whose round
+	# clock stops between players — which looks like the server having hung.
+	ensure_game_ticked(tick)
+
+	if tick % CLOCK_EVERY == 0:
+		_broadcast(ScEvents.Kind.CLOCK, _clock_body())
+
+
+func _clock_body() -> PackedByteArray:
+	return ScEvents.write_clock(
+		game.round_number,
+		game.round_elapsed,
+		game.phase,
+		game.platforms.standing_count() if game.platforms != null else 0,
+		game.alive_count(),
+		game.teams_alive(),
+		game.sides_are_playable()
+	)
+
+
+func ensure_game_ticked(tick: int) -> void:
+	if _game_ticked_for == tick or game == null:
+		return
+
+	_game_ticked_for = tick
+
+	for session_id in _behaviours:
+		var behaviour: ScPlayerNet = _behaviours[session_id]
+
+		# Only what a peer sent. A bot has no peer and is driven by the game itself, and an
+		# empty command applied over the top of that would stand it still.
+		if behaviour.player != null and behaviour.identity != null \
+				and behaviour.identity.owner_peer_id > 0:
+			behaviour.player.controller.apply_command(behaviour.last_move.duplicate_command())
+			behaviour.player.wanted_slot = behaviour.last_slot
+
+	game.tick_once(tick)
+
+	# After the world moved everything, before the snapshot is built. A body pulled before
+	# the physics step would replicate where it was last tick — the family's own "produced
+	# correctly and consumed by nothing" one step along: correct data, wrong instant, and
+	# nothing errors.
+	# [b]Checked, not assumed.[/b] A behaviour lives on the body it replicates, so anything
+	# that frees a body frees its behaviour — and dot-net's registry is not told. A stale
+	# entry here is an "invalid previously freed instance" once a tick for the life of the
+	# process, which is noise rather than a crash and is therefore the kind nobody reads.
+	for net_id in _bodies.keys():
+		var behaviour: Variant = _bodies[net_id]
+
+		if not is_instance_valid(behaviour):
+			_bodies.erase(net_id)
+			continue
+
+		(behaviour as DotNetBehaviour).call(&"pull")
+
+
+# --- The client tick -------------------------------------------------------
+
+func client_tick(tick: int, command: DotFpsCommand, slot: int = 0) -> void:
+	if net == null or net.is_server or game == null:
+		return
+
+	_tick = tick
+
+	var packet := ScNetCommand.new()
+	packet.tick = tick
+	packet.delta = net.clock.tick_duration()
+	packet.move = command if command != null else DotFpsCommand.new()
+	packet.slot = slot
+
+	# Into the local history BEFORE predicting: reconciliation replays it.
+	net.local_inputs().push(packet)
+
+	# The behaviour simulates from `last_move` on a fresh tick and on a replayed one alike —
+	# the predictor's replay sets it through `_net_apply_input`, and this is the fresh tick's
+	# equivalent.
+	var mine: ScPlayerNet = _behaviours.get(local_player_id)
+
+	if mine != null:
+		mine.last_move = packet.move
+		mine.last_slot = slot
+
+		if mine.player != null:
+			mine.player.wanted_slot = slot
+
+	if link != null:
+		var payload := net.encode_ack()
+		var writer := DotNetWriter.new()
+		packet.write(writer)
+		payload.append_array(writer.to_bytes())
+		link.send_input(payload)
+
+	# One predicted player, and nothing else: the platforms, the props and the choppers are
+	# all drawn from snapshots and are never simulated here.
+	if _client_ticked_for != tick:
+		_client_ticked_for = tick
+
+		for identity in net.registry.predicted():
+			for behaviour in identity.behaviours:
+				behaviour._net_simulate(tick, net.clock.tick_duration())
+
+		# The clock a client shows, advanced between the twice-a-second messages that
+		# correct it. Without this the round timer ticks in half-second steps.
+		game.round_elapsed += net.clock.tick_duration()
+
+
+# --- Receiving -------------------------------------------------------------
+
+func receive_snapshot(payload: PackedByteArray) -> DotResult:
+	if net == null or net.is_server:
+		return DotResult.fail(DotError.CODE_FORBIDDEN, "Only a client receives these.")
+
+	if rtt_source.is_valid():
+		net.stats.note_rtt(float(rtt_source.call()))
+
+	return net.receive_snapshot(payload)
+
+
+func receive_input(peer_id: int, payload: PackedByteArray) -> DotResult:
+	if net == null or not net.is_server:
+		return DotResult.fail(DotError.CODE_FORBIDDEN, "Only the server takes input.")
+
+	if not _player_of_peer.has(peer_id):
+		return DotResult.fail(DotError.CODE_FORBIDDEN, "That peer has no player.")
+
+	if payload.size() <= ACK_BYTES:
+		return DotResult.fail(DotError.CODE_PARSE, "Input packet is too short.")
+
+	net.receive_ack_payload(peer_id, payload.slice(0, ACK_BYTES))
+
+	var packet := ScNetCommand.new()
+	packet.read(DotNetReader.new(payload.slice(ACK_BYTES)))
+	return net.input_buffer_for(peer_id).push(packet)
+
+
+## Text for one player: a refusal, a rate limit, a command's reply.
+##
+## [b]To the one person who asked, and that is the whole reason this is a method.[/b] "You
+## are talking too fast" and "you are gagged" are the two commonest things a server says,
+## and both are nobody else's business — a broadcast refusal is a punishment announced to
+## everybody.
+func notice(peer_id: int, text: String) -> void:
+	_tell(peer_id, ScEvents.Kind.NOTICE, ScEvents.write_notice(text))
+
+
+## One routed line to one peer. What [DotGameServices] sends through, via the link.
+func send_chat(peer_id: int, wire: Dictionary) -> void:
+	_tell(peer_id, ScEvents.Kind.CHAT, ScEvents.write_chat(wire))
+
+
+## A voice frame, in whichever direction.
+##
+## [b]Not a [ScEvent].[/b] Voice is fifty packets a second and every event here is reliable,
+## so a talk spurt would put a hundred retransmittable messages in front of a platform
+## collapsing. It also does not go through [DotNetManager]: the message registry seals a
+## message set and hashes it, and adding a fifty-hertz opaque blob buys nothing — the packet
+## has its own header, sequence and validation in [DotVoicePacket].
+func receive_voice(peer_id: int, payload: PackedByteArray) -> DotResult:
+	if payload.is_empty():
+		return DotResult.fail(DotError.CODE_INVALID, "An empty voice frame.")
+
+	if net != null and net.is_server:
+		if peer_id <= 0 or player_for_peer(peer_id) == 0:
+			# A peer with nobody in the world. Refused rather than relayed: the router
+			# stamps the speaker from this id, so relaying one that belongs to nobody puts
+			# a voice in the game with no name on it.
+			return DotResult.fail(
+				DotError.CODE_FORBIDDEN, "That peer has nobody in the world."
+			)
+
+		# [b]One path or the other, never both.[/b] [DotGameModule] assigns
+		# `voice_relay_fn` to the services layer's `relay_voice`; a game that ALSO connected
+		# `voice_requested` to the same router would relay every frame twice — a doubled
+		# talk spurt, a doubled rate limit, and a sequence number the jitter buffer sees go
+		# backwards.
+		if voice_relay_fn.is_valid():
+			voice_relay_fn.call(peer_id, payload)
+		else:
+			voice_requested.emit(peer_id, payload)
+
+		return DotResult.success(null)
+
+	voice_arrived.emit(payload)
+	return DotResult.success(null)
+
+
+func receive_event(payload: PackedByteArray) -> DotResult:
+	if net == null:
+		return DotResult.fail(DotError.CODE_STATE, "No manager.")
+
+	return net.receive(payload, 1)
+
+
+func receive_request(peer_id: int, payload: PackedByteArray) -> DotResult:
+	if net == null:
+		return DotResult.fail(DotError.CODE_STATE, "No manager.")
+
+	return net.receive(payload, peer_id)
+
+
+# --- Server: what a joining peer is told -----------------------------------
+
+func _on_request(message: DotNetMessage) -> void:
+	var ask := message as ScRequest
+
+	if ask == null or net == null or not net.is_server:
+		return
+
+	# [b]From the message, which dot-net stamped from the TRANSPORT.[/b] A peer id inside a
+	# body is a claim; `sender_peer_id` is what the socket said, which is the only version
+	# of it a server may act on.
+	var peer_id := ask.sender_peer_id
+
+	match ask.kind:
+		ScEvents.Ask.READY:
+			_admit(peer_id)
+		ScEvents.Ask.SAY:
+			var said := ScEvents.read_say(ask.reader())
+
+			if bool(said["ok"]):
+				# Emitted rather than acted on: everything about what a line means is
+				# [DotChatRouter]'s, and the router is the module's.
+				say_requested.emit(
+					peer_id, StringName(str(said["channel"])), str(said["text"])
+				)
+		ScEvents.Ask.BOARD:
+			_board(peer_id)
+		ScEvents.Ask.TEAM:
+			var wanted := ScEvents.read_ask_team(ask.reader())
+
+			if bool(wanted["ok"]):
+				_switch_team(peer_id, int(wanted["team"]))
+
+
+func _board(peer_id: int) -> void:
+	var session_id := player_for_peer(peer_id)
+
+	if session_id == 0:
+		return
+
+	var answer := game.try_board(player_key(session_id))
+
+	if not answer.ok:
+		notice(peer_id, answer.error.message)
+
+
+func _switch_team(peer_id: int, team: int) -> void:
+	var session_id := player_for_peer(peer_id)
+
+	if session_id == 0 or team < 1 or team > game.config.team_count:
+		return
+
+	if not game.config.allow_team_choice:
+		notice(peer_id, "This server picks the sides.")
+		return
+
+	var id := player_key(session_id)
+
+	if not game.players.has(id):
+		return
+
+	# [b]It lands on the next round, and that is the rule rather than a limitation.[/b] A
+	# player who changed sides in the middle of a survival phase would be standing on a
+	# platform belonging to the team they just left, with their new team's win condition —
+	# and dot-player-class documents the same decision about changing class mid-fight.
+	game.sides[id] = team
+	(game.players[id] as ScPlayer).team = team
+
+	var _moved := game.match_node.switch_team(String(id), team, _tick)
+	_broadcast(ScEvents.Kind.TEAM, ScEvents.write_team(session_id, team))
+	notice(peer_id, "You are on the other side from the next round.")
+
+
+## Everything in the world, to one peer, once its own copy exists.
+##
+## [b]On READY and not on connect, and the difference is a whole join's worth of
+## messages.[/b] dot-server's signon finishes and THEN the client builds its scene; a server
+## that started talking at connect is one whose JOIN, LAYOUT and PLATFORM land on a node
+## that does not exist yet and are lost, one "Node not found" per call.
+func _admit(peer_id: int) -> void:
+	if peer_id <= 0 or not _player_of_peer.has(peer_id):
+		return
+
+	_ready_peers[peer_id] = true
+
+	if not net.peers().has(peer_id):
+		net.add_peer(peer_id)
+
+	var session_id := int(_player_of_peer[peer_id])
+
+	_tell(peer_id, ScEvents.Kind.HELLO, ScEvents.write_hello(
+		session_id,
+		game.tick_rate,
+		net.clock.tick,
+		game.config.team_count,
+		game.config.survival_seconds,
+		game.config.showdown_seconds,
+		game.config.showdown_warmup_seconds
+	))
+
+	# The map, before anything that refers to a part of it.
+	if not _layout_body.is_empty():
+		_tell(peer_id, ScEvents.Kind.LAYOUT, _layout_body)
+
+	for key: String in _net_of:
+		if not key.begins_with("d"):
+			continue
+
+		_tell(peer_id, ScEvents.Kind.PLATFORM, ScEvents.write_platform(
+			int(_net_of[key]), key.substr(1).to_int()
+		))
+
+	for other in _behaviours.keys():
+		_tell(peer_id, ScEvents.Kind.JOIN, _join_body(int(other)))
+
+	# And everything standing in the world. A player who joins halfway through a round has
+	# to be told about every prop that is still up, or they walk into cover they cannot see.
+	for net_id in _bodies:
+		var behaviour: ScPropNet = _bodies[net_id] as ScPropNet
+
+		if behaviour == null or behaviour.prop == null or not is_instance_valid(behaviour.prop):
+			continue
+
+		_tell(peer_id, ScEvents.Kind.PROP, ScEvents.write_prop(
+			int(net_id),
+			_kind_of(behaviour),
+			behaviour.replicated_position(),
+			behaviour is ScCopterNet
+		))
+
+	_tell(peer_id, ScEvents.Kind.PHASE, ScEvents.write_phase(game.phase))
+	_tell(peer_id, ScEvents.Kind.CLOCK, _clock_body())
+
+
+## Which catalogue entry a replicated body came from.
+##
+## Read off the spawners rather than remembered beside the table: a second copy of "what
+## this is" is a second thing that can disagree with the first, and this one is only asked
+## for on a join.
+func _kind_of(behaviour: ScPropNet) -> StringName:
+	if behaviour is ScCopterNet:
+		var copter: DotVehicleInstance = (behaviour as ScCopterNet).vehicle
+		return copter.def.id if copter != null and copter.def != null else ScContent.COPTER
+
+	var prop := game.props.prop_for_node(behaviour.prop) if game.props != null else null
+	return prop.def.id if prop != null and prop.def != null else ScContent.CRATE
+
+
+func _join_body(session_id: int) -> PackedByteArray:
+	var behaviour: ScPlayerNet = _behaviours.get(session_id)
+
+	if behaviour == null or behaviour.identity == null or behaviour.player == null:
+		return PackedByteArray()
+
+	return ScEvents.write_join(
+		session_id,
+		behaviour.identity.net_id,
+		behaviour.player.display_name,
+		game.team_of(behaviour.player.player_id)
+	)
+
+
+## To every peer that has said it is ready, and to nobody else.
+##
+## [b]An empty body is dropped rather than sent.[/b] It means an encoder was handed
+## something that had already gone — a player whose entity was released before the LEAVE was
+## written — and a zero-length event decodes on the far end as a valid message about
+## nothing, which is the truncation bug this family has already paid for once.
+func _broadcast(kind: int, body: PackedByteArray) -> void:
+	if net == null or not net.is_server or body.is_empty():
+		return
+
+	for peer_id in _ready_peers.keys():
+		_tell(int(peer_id), kind, body)
+
+
+## One peer, and never zero.
+##
+## `net.send(msg, 0)` is a BROADCAST in dot-net, so a helper that passed a missing peer id
+## straight through would send one player's private message to everybody. game-hungario
+## shipped exactly that.
+func _tell(peer_id: int, kind: int, body: PackedByteArray) -> void:
+	if peer_id <= 0 or net == null or body.is_empty():
+		return
+
+	net.send(ScEvent.of(kind, body), peer_id)
+
+
+# --- Client: what it does with all that ------------------------------------
+
+func ask_ready() -> void:
+	_ask(ScEvents.Ask.READY, PackedByteArray([0]))
+
+
+## Says something. The server decides what it means and who hears it.
+func ask_say(channel_id: StringName, text: String) -> void:
+	if text.strip_edges() == "":
+		return
+
+	_ask(ScEvents.Ask.SAY, ScEvents.write_say(channel_id, text))
+
+
+## Asks to get into, or out of, whatever is nearest.
+func ask_board() -> void:
+	_ask(ScEvents.Ask.BOARD, ScEvents.write_board())
+
+
+func ask_team(team: int) -> void:
+	_ask(ScEvents.Ask.TEAM, ScEvents.write_ask_team(team))
+
+
+## Sends one encoded voice packet to the server. Client side.
+func send_voice(payload: PackedByteArray) -> void:
+	if link != null and net != null and not net.is_server:
+		link.send_voice(1, payload)
+
+
+func _ask(kind: int, body: PackedByteArray) -> void:
+	if net == null or net.is_server:
+		return
+
+	net.send(ScRequest.of(kind, body), 1)
+
+
+func _on_event(message: DotNetMessage) -> void:
+	var event := message as ScEvent
+
+	if event == null or game == null or net == null or net.is_server:
+		return
+
+	var reader := event.reader()
+
+	match event.kind:
+		ScEvents.Kind.HELLO:
+			_apply_hello(reader)
+		ScEvents.Kind.LAYOUT:
+			_apply_layout(reader)
+		ScEvents.Kind.PLATFORM:
+			_apply_platform(reader)
+		ScEvents.Kind.JOIN:
+			_apply_join(reader)
+		ScEvents.Kind.LEAVE:
+			var session_id := ScEvents.read_player(reader)
+			_release_entity(session_id)
+			game.remove_player(player_key(session_id))
+			roster_changed.emit(session_id)
+		ScEvents.Kind.TEAM:
+			var side := ScEvents.read_team(reader)
+
+			if bool(side["ok"]):
+				var id := player_key(int(side["player_id"]))
+				game.sides[id] = int(side["team"])
+
+				if game.players.has(id):
+					(game.players[id] as ScPlayer).team = int(side["team"])
+
+				roster_changed.emit(int(side["player_id"]))
+		ScEvents.Kind.PROP:
+			_apply_prop(reader)
+		ScEvents.Kind.PROP_GONE:
+			_apply_prop_gone(reader)
+		ScEvents.Kind.SEAT:
+			_apply_seat(reader)
+		ScEvents.Kind.CLOCK:
+			_apply_clock(reader)
+		ScEvents.Kind.ROUND:
+			var round_info := ScEvents.read_round(reader)
+
+			if bool(round_info["ok"]):
+				game.round_number = int(round_info["round"])
+
+				if bool(round_info["began"]):
+					game.round_elapsed = 0.0
+
+				round_changed.emit(
+					int(round_info["round"]),
+					bool(round_info["began"]),
+					int(round_info["winner"])
+				)
+		ScEvents.Kind.PHASE:
+			var moved := ScEvents.read_phase(reader)
+
+			if bool(moved["ok"]):
+				game.phase = int(moved["phase"])
+				phase_received.emit(int(moved["phase"]))
+		ScEvents.Kind.SPECIAL:
+			var strange := ScEvents.read_special(reader)
+
+			if bool(strange["ok"]):
+				special_received.emit(
+					strange["special_id"],
+					bool(strange["starting"]),
+					str(strange["blurb"])
+				)
+		ScEvents.Kind.DEATH:
+			var death := ScEvents.read_death(reader)
+
+			if bool(death["ok"]):
+				death_received.emit(
+					int(death["player_id"]), int(death["by"]), death["why"]
+				)
+		ScEvents.Kind.COLLAPSE:
+			var fell := ScEvents.read_collapse(reader)
+
+			if bool(fell["ok"]):
+				collapse_received.emit(int(fell["index"]), fell["why"])
+		ScEvents.Kind.BLAST:
+			var went_off := ScEvents.read_blast(reader)
+
+			if bool(went_off["ok"]):
+				blast_received.emit(went_off["position"], float(went_off["radius"]))
+		ScEvents.Kind.ARMED:
+			var armed := ScEvents.read_armed(reader)
+
+			if bool(armed["ok"]):
+				armed_received.emit(int(armed["player_id"]), armed["weapon_id"])
+		ScEvents.Kind.CHAT:
+			var wire := ScEvents.read_chat(reader)
+
+			if bool(wire["ok"]):
+				chat_received.emit(wire)
+		ScEvents.Kind.NOTICE:
+			var text := ScEvents.read_notice(reader)
+
+			if bool(text["ok"]):
+				notice_received.emit(str(text["text"]))
+
+
+func _apply_hello(reader: DotNetReader) -> void:
+	var hello := ScEvents.read_hello(reader)
+
+	if not bool(hello["ok"]):
+		return
+
+	local_player_id = int(hello["player_id"])
+
+	# [b]The server's tick rate, before anything is derived from it.[/b] Another game in
+	# this family shipped with HELLO carrying this and nothing reading it: a browser client
+	# counted at the 60 its export declared against a server on 128, so the correction rate
+	# was 0.96 and every replicated time was out by 128/60. Produced correctly and consumed
+	# by nothing, and invisible to a one-process suite because one process has one engine
+	# rate and both ends agree whatever the wire says.
+	#
+	# Before `sync_from_server`, because the clock converts its error and its lead through
+	# `tick_rate` and would otherwise do that arithmetic at the old rate.
+	_adopt_tick_rate(int(hello["tick_rate"]))
+
+	var rtt := float(rtt_source.call()) if rtt_source.is_valid() else 0.0
+	net.clock.sync_from_server(int(hello["server_tick"]), maxf(0.0, rtt))
+
+	game.config.team_count = clampi(int(hello["team_count"]), 2, 6)
+	game.config.survival_seconds = float(hello["survival_seconds"])
+	game.config.showdown_seconds = float(hello["showdown_seconds"])
+	game.config.showdown_warmup_seconds = float(hello["handover_seconds"])
+
+	hello_received.emit(local_player_id)
+
+
+## Puts the whole client — the world, every controller and the ENGINE — on the server's rate.
+##
+## That last one is not cosmetic. Measured in another game in this family at 60 against 128:
+## the simulation stayed correct, because the clock is asked how many ticks a frame is worth
+## — it just ran them in bursts of two and three, and the camera advanced 74 mm on six frames
+## out of seven and 112 mm on the seventh. A 47% change in apparent speed, eight times a
+## second.
+##
+## A server never calls this: its rate is `sv_tickrate`, and adopting a peer's would be a
+## client telling the server how fast to run.
+func _adopt_tick_rate(rate: int) -> void:
+	if net == null or net.is_server or game == null or rate <= 0 or rate == game.tick_rate:
+		return
+
+	var before := game.tick_rate
+
+	if not game.set_tick_rate(rate):
+		return
+
+	net.config.tick_rate = game.tick_rate
+	# The LIVE one, which is built from the config back at `setup()` and is therefore not
+	# updated by writing the config alone.
+	net.clock.tick_rate = game.tick_rate
+	Engine.physics_ticks_per_second = game.tick_rate
+
+	DotLog.info(CHANNEL, "adopted the server's tick rate", {
+		"was": before, "now": game.tick_rate, "engine": Engine.physics_ticks_per_second,
+	})
+
+
+## The map, which on a client is a list of cells and six numbers.
+func _apply_layout(reader: DotNetReader) -> void:
+	var described := ScEvents.read_layout(reader)
+
+	if not bool(described["ok"]) or game.platforms == null:
+		return
+
+	game.config.columns = maxi(int(described["columns"]), 1)
+	game.config.rows = maxi(int(described["rows"]), 1)
+	game.config.column_pitch = float(described["column_pitch"])
+	game.config.row_pitch = float(described["row_pitch"])
+	game.config.platform_size = float(described["platform_size"])
+	game.config.deck_height = float(described["deck_height"])
+
+	game.platforms.build_cells(
+		described["cells"],
+		float(described["pitch_scale"]),
+		float(described["stiffness_scale"]),
+		game.physics
+	)
+
+	# The arena is derived from the same numbers, so it is rebuilt with them. A client whose
+	# floor, tube and corners were laid out for a different platform field would have a
+	# cannon that fires out of the side of a tube and corners that are not where the
+	# survivors arrive.
+	if game.arena != null:
+		game.arena.build()
+
+
+func _apply_platform(reader: DotNetReader) -> void:
+	var told := ScEvents.read_platform(reader)
+
+	if not bool(told["ok"]) or game.platforms == null:
+		return
+
+	var net_id := int(told["net_id"])
+	var index := int(told["index"])
+
+	if _bodies.has(net_id):
+		return
+
+	var deck := game.platforms.deck_at(index)
+
+	if deck == null or deck.body == null:
+		# Not an error: a client that has not yet been told this round's layout is one that
+		# will be, and the platform entity will be announced again on the next round. Drawn
+		# nothing rather than guessed at.
+		DotLog.debug(CHANNEL, "a platform arrived before the field it belongs to", {
+			"index": index,
+		})
+		return
+
+	var behaviour := ScPlatformNet.new()
+	behaviour.name = "Net"
+	behaviour.index = index
+	behaviour.platforms = game.platforms
+	deck.body.add_child(behaviour)
+
+	var identity := DotNetIdentity.new()
+	identity.name = "Identity"
+	identity.owner_peer_id = 0
+	identity.authority = DotNetIdentity.Authority.SERVER
+	identity.always_relevant = true
+	deck.body.add_child(identity)
+
+	var registered := net.registry.register(identity, net_id, net.clock.tick, net.config)
+
+	if not registered.ok:
+		DotLog.warn(CHANNEL, "could not mirror a platform", {"error": str(registered.error)})
+		return
+
+	_bodies[net_id] = behaviour
+
+
+func _apply_join(reader: DotNetReader) -> void:
+	var join := ScEvents.read_join(reader)
+
+	if not bool(join["ok"]):
+		return
+
+	var session_id := int(join["player_id"])
+	var id := player_key(session_id)
+	var player: ScPlayer = game.players.get(id)
+
+	if player == null:
+		player = game.add_player(id, str(join["name"]), int(join["team"]))
+
+		if player == null:
+			return
+
+		# A client never samples: the client loop hands it commands, and the local player is
+		# the only one whose commands exist at all.
+		player.sampler = null
+		player.samples_input = false
+
+		var identity := _build_entity(player, 0)
+		var registered := net.registry.register(
+			identity, int(join["net_id"]), net.clock.tick, net.config
+		)
+
+		if not registered.ok:
+			DotLog.warn(CHANNEL, "could not mirror a player", {"error": str(registered.error)})
+			return
+	else:
+		player.display_name = str(join["name"])
+
+	game.sides[id] = int(join["team"])
+	player.team = int(join["team"])
+	roster_changed.emit(session_id)
+
+
+## A prop or a chopper the server has put out.
+func _apply_prop(reader: DotNetReader) -> void:
+	var info := ScEvents.read_prop(reader)
+
+	if not bool(info["ok"]):
+		return
+
+	var net_id := int(info["net_id"])
+
+	if _bodies.has(net_id):
+		return
+
+	var kind_id: StringName = info["kind_id"]
+	var scene_path := _scene_for(kind_id, bool(info["vehicle"]))
+
+	if scene_path == "":
+		# Not an error: a server may run a catalogue this build does not have, and the
+		# honest answer is to draw nothing rather than to guess.
+		DotLog.debug(CHANNEL, "something this build does not have", {"id": String(kind_id)})
+		return
+
+	var scene: PackedScene = load(scene_path)
+
+	if scene == null:
+		DotLog.warn(CHANNEL, "a scene would not load", {"path": scene_path})
+		return
+
+	var body := scene.instantiate() as Node3D
+
+	if body == null:
+		return
+
+	game.add_child(body)
+	body.global_position = info["position"]
+
+	# [b]Frozen before anything else touches it.[/b] A mirrored body must not be simulated
+	# locally as well: an unfrozen [RigidBody3D] fights every position written into it and
+	# the result is a crate jittering against gravity while the packets say it is falling.
+	var rigid := body as RigidBody3D
+
+	if rigid != null:
+		rigid.freeze = true
+
+	var behaviour: ScPropNet = ScCopterNet.new() if bool(info["vehicle"]) else ScPropNet.new()
+	behaviour.name = "Net"
+	behaviour.prop = body
+	body.add_child(behaviour)
+
+	var identity := DotNetIdentity.new()
+	identity.name = "Identity"
+	identity.owner_peer_id = 0
+	identity.authority = DotNetIdentity.Authority.SERVER
+	identity.always_relevant = true
+	body.add_child(identity)
+
+	var registered := net.registry.register(identity, net_id, net.clock.tick, net.config)
+
+	if not registered.ok:
+		DotLog.warn(CHANNEL, "could not mirror a body", {"error": str(registered.error)})
+		body.queue_free()
+		return
+
+	_bodies[net_id] = behaviour
+
+
+## Where a client finds the scene for something the server named.
+##
+## [b]Both catalogues, because the client has both and neither is the wire format.[/b] The
+## event carries a catalogue id; this build turns it into a path, and a build with a
+## different catalogue turns the same id into its own path. That is the whole point of not
+## sending a script name.
+func _scene_for(kind_id: StringName, vehicle: bool) -> String:
+	if vehicle:
+		var def := game.vehicles.catalogue.get_vehicle(kind_id) if game.vehicles != null else null
+		return def.scene_path if def != null else ""
+
+	var prop := game.props.catalogue.get_prop(kind_id) if game.props != null else null
+	return prop.scene_path if prop != null else ""
+
+
+func _apply_prop_gone(reader: DotNetReader) -> void:
+	var info := ScEvents.read_prop_gone(reader)
+
+	if not bool(info["ok"]):
+		return
+
+	var net_id := int(info["net_id"])
+	var behaviour: ScPropNet = _bodies.get(net_id) as ScPropNet
+	_bodies.erase(net_id)
+
+	if behaviour == null:
+		return
+
+	if net != null:
+		net.registry.unregister(net_id)
+
+	if behaviour.prop != null and is_instance_valid(behaviour.prop):
+		behaviour.prop.queue_free()
+
+
+## A client's copy of "that player is flying".
+##
+## [b]The client does not run the ride at all.[/b] It has no vehicle spawner, no seats and
+## no exit sweep — the server owns every one of those — so what arrives is the answer rather
+## than the question. What the client does with it is stop predicting somebody who is no
+## longer walking.
+func _apply_seat(reader: DotNetReader) -> void:
+	var info := ScEvents.read_seat(reader)
+
+	if not bool(info["ok"]):
+		return
+
+	var behaviour: ScPlayerNet = _behaviours.get(int(info["player_id"]))
+
+	if behaviour == null or behaviour.player == null:
+		return
+
+	behaviour.player.set_riding(bool(info["seated"]))
+	seat_changed.emit(int(info["player_id"]), bool(info["seated"]))
+
+
+func _apply_clock(reader: DotNetReader) -> void:
+	var clock := ScEvents.read_clock(reader)
+
+	if not bool(clock["ok"]):
+		return
+
+	game.round_number = int(clock["round"])
+	game.round_elapsed = float(clock["elapsed"])
+	game.phase = int(clock["phase"])
+	game.remote_standing = int(clock["standing"])
+	game.remote_alive = int(clock["alive"])
+	game.remote_playable = bool(clock["playable"])
+
+
+# --- Reporting -------------------------------------------------------------
+
+func describe() -> Dictionary:
+	var out := {
+		"server": net != null and net.is_server,
+		"players": _behaviours.size(),
+		"bodies": _bodies.size(),
+		"ready_peers": _ready_peers.size(),
+		"tick": _tick,
+	}
+
+	if not (net != null and net.is_server):
+		out["local_player"] = local_player_id
+
+	if link != null:
+		out["link"] = link.describe()
+
+	return out
+
+
+func describe_lines() -> PackedStringArray:
+	var lines := PackedStringArray([
+		"bridge     %s" % ("server" if net != null and net.is_server else "client"),
+		"players    %d" % _behaviours.size(),
+		"bodies     %d replicated" % _bodies.size(),
+		"peers      %d ready" % _ready_peers.size(),
+		"tick       %d" % _tick,
+	])
+
+	if link != null:
+		lines.append_array(link.describe_lines())
+
+	return lines
