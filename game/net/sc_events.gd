@@ -179,12 +179,18 @@ static func write_layout(
 	w.write_string(String(layout_id), ID_BYTES)
 	w.write_uint(clampi(columns, 1, 63), 6)
 	w.write_uint(clampi(rows, 1, 15), 4)
-	w.write_float_range(column_pitch, 0.0, 128.0, 14)
-	w.write_float_range(row_pitch, 0.0, 256.0, 14)
-	w.write_float_range(platform_size, 0.0, 64.0, 12)
-	w.write_float_range(deck_height, 0.0, 512.0, 16)
-	w.write_float_range(pitch_scale, 0.0, 4.0, 10)
-	w.write_float_range(stiffness_scale, 0.0, 4.0, 10)
+	# [b]Half a millimetre on every length, and the first version was two centimetres.[/b]
+	# These are sent ONCE a round, so the bits are free — and what they buy is the client's
+	# platform seven being in the same place as the server's rather than near it. A 14-bit
+	# pitch over 128 m is 8 mm, which compounds across five columns into 2 cm of floor that
+	# is somewhere else, and the edge of a platform is exactly where a player is standing
+	# when that matters.
+	w.write_float_range(column_pitch, 0.0, 128.0, 18)
+	w.write_float_range(row_pitch, 0.0, 256.0, 19)
+	w.write_float_range(platform_size, 0.0, 64.0, 17)
+	w.write_float_range(deck_height, 0.0, 512.0, 20)
+	w.write_float_range(pitch_scale, 0.0, 4.0, 16)
+	w.write_float_range(stiffness_scale, 0.0, 4.0, 16)
 
 	# The field itself, one cell at a time. Eleven bits each and never more than a couple of
 	# dozen of them, which is thirty-odd bytes once a round for the one thing both ends have
@@ -203,12 +209,12 @@ static func read_layout(r: DotNetReader) -> Dictionary:
 	var layout_id := r.read_string(ID_BYTES)
 	var columns := r.read_uint(6)
 	var rows := r.read_uint(4)
-	var column_pitch := r.read_float_range(0.0, 128.0, 14)
-	var row_pitch := r.read_float_range(0.0, 256.0, 14)
-	var platform_size := r.read_float_range(0.0, 64.0, 12)
-	var deck_height := r.read_float_range(0.0, 512.0, 16)
-	var pitch_scale := r.read_float_range(0.0, 4.0, 10)
-	var stiffness_scale := r.read_float_range(0.0, 4.0, 10)
+	var column_pitch := r.read_float_range(0.0, 128.0, 18)
+	var row_pitch := r.read_float_range(0.0, 256.0, 19)
+	var platform_size := r.read_float_range(0.0, 64.0, 17)
+	var deck_height := r.read_float_range(0.0, 512.0, 20)
+	var pitch_scale := r.read_float_range(0.0, 4.0, 16)
+	var stiffness_scale := r.read_float_range(0.0, 4.0, 16)
 
 	var count := r.read_uint(PLATFORM_BITS)
 	var cells: Array[Vector3i] = []

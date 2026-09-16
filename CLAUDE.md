@@ -43,7 +43,7 @@ assets/kenney/      eight CC0 models and two atlases
 assets/{blaster-kit,melee,arms}/  the weapon pack's own art, vendored
 textures/prototype/ six CC0 prototype textures, one per role
 scenes/             sc_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (95 checks), dedicated (43 checks)
+examples/           headless_run (95), dedicated (43), headless_net (122)
 tools/              shot.gd/.tscn/.sh — render a frame and look at it
 ```
 
@@ -109,6 +109,12 @@ Every one of these was found by running the game or by looking at a picture of i
 
 - **A player could not see the edge they were about to walk off.** Every platform is at the same height, so from eye level the neighbouring ones are edge-on — and with under a metre between them the whole field reads as one continuous floor stretching to the horizon. The grid does not help: it is the same grid on both platforms and it runs straight across the join. There is a band in the cannon's colour around every platform now, mesh only, and it is the single largest readability change in the game. The first attempt at it was invisible because the rim was positioned relative to the slab's middle and the pivot is the SURFACE — and the screenshot that was supposed to prove it looked identical to the one before it, which is its own small lesson about what a picture proves.
 
+- **A player who joined in the middle of a round was never placed**, so they were left where a `CharacterBody3D` starts — the origin, which in this map is forty metres below the platforms and inside the floor that kills you. They died on their first tick, every time. On a two-team server that also ended the round, because a side with nobody alive is an elimination — which re-laid the field and freed every platform body from inside the netcode's own loop over replicated entities. The loopback suite found it as a flood of *"previously freed instance"*, three layers from the cause.
+
+- **A round re-laying the field freed nodes inside somebody else's iteration.** The first behaviour through a tick is what runs the whole world, so a round that ends mid-tick destroys entities that `DotNetManager.server_tick` is part-way through walking. `ScPlatforms.clear` and `ScArena._clear` take their children out of the tree at once and free them at the end of the frame, which is neither `free()` nor `queue_free()` alone: the removal is what stops two fields existing at one height, and the deferral is what stops the destruction landing mid-loop.
+
+- **A client rebuilding its field never unregistered the old one.** The server has `world_clearing` for this; a client is told rather than asked, so `_apply_layout` had no equivalent and left a dozen identities in the registry pointing at freed nodes.
+
 - **The health number was drawn underneath the chat box.** Both anchor bottom-left. Invisible to every headless assertion, because a headless viewport is 64 × 64 and nothing in one can overlap anything.
 
 ## The netcode
@@ -120,6 +126,8 @@ Every one of these was found by running the game or by looking at a picture of i
 **A platform replicates in four numbers, and the state is not interpolated.** The lean moves continuously and a client between two snapshots should be between two leans; a platform that has come off its pillar takes its collider away on the tick the client is told, not smoothly over the next three. Half way between standing and gone is not a thing a floor can be.
 
 **The clock carries what a client cannot count.** A client runs no platform model, so counting the platforms that are still up would count whatever it last heard — and that number is the most important one on this game's HUD, because it is what tells a player whether there is anywhere left to go.
+
+**`examples/headless_net.tscn` is the real path minus the socket.** Two worlds, two managers, two bridges and two links with the RPC replaced by a callable — so the encoders, the seal, the snapshot build, the prediction and the reconciliation all run. The client is deliberately given a different tick rate and a different field than the server, because one process has one engine rate and one default configuration: two halves that agree by construction make every assertion that they agree pass for the wrong reason. Four of the findings above came from it, and it cannot see Godot's own RPC routing — that is what `dedicated.tscn` and a real client are for.
 
 **The snapshot rate is thirty, against the twenty game-buses-from-hell uses.** Almost nothing here is predicted and the one thing a player has to read continuously is the lean of the floor they are standing on, which arrives only in a snapshot. At twenty, a platform's tilt updates in visible steps — and a step in the surface under your feet reads as the game stuttering.
 
@@ -161,13 +169,14 @@ find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read
 done
 godot --headless --path . res://examples/headless_run.tscn   # 13 sections, 95 checks
 godot --headless --path . res://examples/dedicated.tscn      # 7 sections, 43 checks
+godot --headless --path . res://examples/headless_net.tscn   # 13 sections, 122 checks
 tools/shot.sh --view=field
 tools/shot.sh --view=lean
 tools/shot.sh --view=copter
 tools/shot.sh --view=showdown
 ```
 
-Both suites count sections **and** a total, and the total is the one that catches what the section counter cannot: a runtime error inside a section aborts that function and the section counter is already satisfied, because the section announced itself on the way in. Both guards were armed — the total was raised by one and the run re-run — and both fired.
+All three suites count sections **and** a total, and the total is the one that catches what the section counter cannot: a runtime error inside a section aborts that function and the section counter is already satisfied, because the section announced itself on the way in. Every guard was armed — the total raised by one and the run re-run — and every one fired.
 
 **The render is not optional.** Four of the entries above were found by looking at a picture and are invisible to every assertion in this repository. `tools/shot.sh` is not `--headless`: Godot's headless display driver does no rendering at all, so a capture under it is a black PNG, which is worse than no screenshot because it looks like one.
 
@@ -185,8 +194,7 @@ godot --headless --path ../mg-smash-copter --import   # form five: a pack cannot
 
 In the order they are worth doing.
 
-1. **A loopback netcode suite.** `examples/headless_net.tscn` does not exist. The wire format, the four behaviours, the link and the bridge are all written and none of them has had two ends talking to each other — which by this family's own rule is code nothing has run. Every encoder here needs round-tripping, because dot-moderation once wrote `"voice muted"` and read back a warning and the one thing that addon existed for silently did nothing.
-2. **Replicate the weapons.** `ZeeWeaponNet.all_specs()` is four fields on top of dot-weapon's three, and without them a watcher does not see anybody else's gun and the local view model is drawn from a rig the server never confirms.
+1. **Replicate the weapons.** `ZeeWeaponNet.all_specs()` is four fields on top of dot-weapon's three, and without them a watcher does not see anybody else's gun and the local view model is drawn from a rig the server never confirms.
 3. **Lag compensation.** Two callables on `DotCombatManager` and a history of hitbox transforms per tick.
 4. **Publish it as a pack and connect a real client.** Nothing here has been mounted.
 5. **An identity layer**, if this game ever wants profiles and avatars.

@@ -268,13 +268,19 @@ func cells() -> Array[Vector3i]:
 
 ## Everything a previous [method build] put here.
 ##
-## `free`, not `queue_free`: the next line builds the replacement, and a deferred free
-## would leave both fields in the tree for the rest of the frame — two floors at the same
-## height, which a body spawned in that frame can land on.
+## [b]Taken out of the tree at once and freed at the end of the frame, which is not the
+## same as either half alone.[/b] `remove_child` is what stops two fields existing at the
+## same height for the rest of the frame — two floors, one of which a body spawned in that
+## frame can land on. The deferred free is what stops a node being destroyed in the middle
+## of somebody else's iteration: a round ends inside the netcode's own loop over replicated
+## entities, because the first behaviour through a tick is what runs the whole world, so an
+## immediate `free()` here pulls identities out from under `DotNetManager.server_tick`
+## while it is walking them. It reports that as "Nonexistent function can_simulate in base
+## previously freed", once per entity, per tick, for ever.
 func clear() -> void:
 	for child in get_children():
 		remove_child(child)
-		child.free()
+		child.queue_free()
 
 	decks.clear()
 	_by_body.clear()
@@ -674,7 +680,11 @@ func _step_falling(index: int, deck: Deck, delta: float) -> void:
 ## fifteen — which is exactly the range this game lives in. A plane has one normal and one
 ## basis that carries UP onto it.
 func _draw(deck: Deck) -> void:
-	if deck.body == null or not is_instance_valid(deck.body):
+	# [b]In the tree as well as valid.[/b] A field cleared between two ticks leaves its
+	# bodies out of the tree and queued for freeing for the rest of the frame, and writing a
+	# transform onto one of those is an engine error with a backtrace attached. See
+	# [method ScPropNet._drawable].
+	if deck.body == null or not is_instance_valid(deck.body) or not deck.body.is_inside_tree():
 		return
 
 	var normal := deck.normal()
@@ -853,8 +863,15 @@ func adopt(index: int, lean: Vector2, sink: float, state: int) -> void:
 		if collider != null:
 			collider.disabled = state != State.STANDING
 
-		if state == State.GONE and deck.body != null and is_instance_valid(deck.body):
+		# [b]Out of the reverse index the moment it stops STANDING, not when it is gone.[/b]
+		# That index is what a motor's `ground_id` is resolved through, so a platform left in
+		# it while it falls is one a client still believes somebody is standing on — and the
+		# server took it out the instant it came off its pillar. The two ends disagreeing
+		# about what is underfoot is the one thing this whole model exists to prevent.
+		if state != State.STANDING and deck.body != null and is_instance_valid(deck.body):
 			_by_body.erase(deck.body.get_instance_id())
+
+		if state == State.GONE and deck.body != null and is_instance_valid(deck.body):
 			deck.body.queue_free()
 			deck.body = null
 

@@ -31,11 +31,24 @@ func _register_net_vars() -> void:
 ## Authority only. The body is moved by the physics server; this copies where it ended up
 ## into the replicated properties.
 func pull() -> void:
-	if prop == null or not is_instance_valid(prop):
+	if not _drawable():
 		return
 
 	net_position = prop.global_position
 	net_rotation = prop.global_basis.get_rotation_quaternion()
+
+
+## Whether this behaviour's body can still be asked where it is.
+##
+## [b]`is_inside_tree` as well as `is_instance_valid`, and the second is not enough.[/b] A
+## round re-lays the field from inside the netcode's own loop over replicated entities, so
+## a body taken out of the tree and queued for freeing is an entirely expected state for
+## the rest of that frame — and `global_position` on one is
+## `Condition "!is_inside_tree()" is true`, with a full backtrace, once per body per tick.
+## To an operator reading a log that is indistinguishable from a crash. dot-entity guards
+## its own `position()` for exactly this reason and writes down why.
+func _drawable() -> bool:
+	return prop != null and is_instance_valid(prop) and prop.is_inside_tree()
 
 
 ## Where this body is, for anything that does not care what kind of body it is.
@@ -69,7 +82,7 @@ func _net_interpolated(_tick: int) -> void:
 
 
 func _draw() -> void:
-	if prop == null or not is_instance_valid(prop):
+	if not _drawable():
 		return
 
 	if identity != null and identity.is_authoritative:

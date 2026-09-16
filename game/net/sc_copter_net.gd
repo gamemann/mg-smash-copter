@@ -64,7 +64,7 @@ func replicated_position() -> Vector3:
 
 
 func _draw() -> void:
-	if prop == null or not is_instance_valid(prop):
+	if not _drawable():
 		return
 
 	if identity != null and identity.is_authoritative:

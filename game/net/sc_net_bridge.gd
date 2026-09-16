@@ -770,6 +770,11 @@ func ensure_game_ticked(tick: int) -> void:
 			_bodies.erase(net_id)
 			continue
 
+		# Out of the tree but not yet freed is the ordinary state for the rest of a frame in
+		# which a round was re-laid, and a behaviour in it has nothing to say.
+		if not (behaviour as Node).is_inside_tree():
+			continue
+
 		(behaviour as DotNetBehaviour).call(&"pull")
 
 
@@ -1319,6 +1324,16 @@ func _apply_layout(reader: DotNetReader) -> void:
 	game.config.platform_size = float(described["platform_size"])
 	game.config.deck_height = float(described["deck_height"])
 
+	# [b]Let go of the old field BEFORE building the new one.[/b] A client's platforms are
+	# replicated entities whose behaviour and identity are CHILDREN of the platform's own
+	# body, so rebuilding the field frees them — and an entry left in the registry is an
+	# identity dot-net keeps walking every snapshot, reading a transform off a node that is
+	# no longer in the tree. It reports that as `Condition "!is_inside_tree()" is true` and
+	# as "Trying to assign invalid previously freed instance", once per platform per tick,
+	# for ever. The server has `world_clearing` for this; a client is told rather than
+	# asked, so this is where it happens.
+	_forget_platforms()
+
 	game.platforms.build_cells(
 		described["cells"],
 		float(described["pitch_scale"]),
@@ -1332,6 +1347,20 @@ func _apply_layout(reader: DotNetReader) -> void:
 	# survivors arrive.
 	if game.arena != null:
 		game.arena.build()
+
+
+## Unregisters every platform this end is mirroring. Client side; see [method _apply_layout].
+func _forget_platforms() -> void:
+	for net_id in _bodies.keys():
+		var behaviour: Variant = _bodies[net_id]
+
+		if not (behaviour is ScPlatformNet):
+			continue
+
+		_bodies.erase(net_id)
+
+		if net != null:
+			net.registry.unregister(int(net_id))
 
 
 func _apply_platform(reader: DotNetReader) -> void:

@@ -79,10 +79,12 @@ func build() -> void:
 	DotLog.info(CHANNEL, "the arena is up", describe())
 
 
+## Out of the tree at once, freed at the end of the frame. See [method ScPlatforms.clear]
+## for why neither half of that is enough on its own.
 func _clear() -> void:
 	for child in get_children():
 		remove_child(child)
-		child.free()
+		child.queue_free()
 
 	_showdown = null
 	_floor_body = null

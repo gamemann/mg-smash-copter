@@ -673,6 +673,16 @@ func add_player(
 	if match_node != null:
 		var _seated := match_node.add_player(String(player_id), display_name, _tick, team)
 
+	# [b]Placed NOW, and not only at the top of a round.[/b] `_place_players` runs when a
+	# round is laid out, so a player who joins in the middle of one was left wherever a
+	# `CharacterBody3D` starts — the origin, which in this map is forty metres below the
+	# platforms and inside the floor that kills you. They died on their first tick, every
+	# time, and on a two-team server that also ended the round: a side with nobody alive is
+	# an elimination, so the round ended, re-laid the field and freed every platform body
+	# INSIDE the netcode's own identity loop. The loopback suite found it as a flood of
+	# "previously freed instance", three layers from the cause.
+	place_one(player)
+
 	DotLog.debug(CHANNEL, "player joined", {"id": String(player_id), "team": team})
 
 	# Last, after the health and the side: the bridge answers this by building the
@@ -724,6 +734,48 @@ func _give_hitboxes(player: ScPlayer) -> void:
 
 	boxes.refresh()
 	boxes.register_with(combat, player.entity_id)
+
+
+## Puts one player somewhere they can stand, without disturbing anybody else.
+##
+## Their own side's platform if it is still up, and any standing platform otherwise. A
+## joiner who arrives when the whole field has gone is put where the field WAS, which is a
+## fall — and that is the honest answer: there is nowhere to stand, and the next round is a
+## few seconds away.
+func place_one(player: ScPlayer) -> void:
+	if platforms == null:
+		return
+
+	var standing: Array[int] = []
+
+	for i in range(platforms.count()):
+		var deck := platforms.deck_at(i)
+
+		if deck != null and deck.is_standing():
+			standing.append(i)
+
+	if standing.is_empty():
+		player.place_at(
+			Vector3(0.0, config.deck_height + 2.0, 0.0),
+			0.0
+		)
+		return
+
+	# The same arithmetic `_place_players` uses, so a joiner lands with their own side
+	# rather than somewhere a second rule chose.
+	var slot := maxi(player.team - 1, 0) * maxi(standing.size() / maxi(config.team_count, 1), 1)
+	var index: int = standing[clampi(slot, 0, standing.size() - 1)]
+	var deck := platforms.deck_at(index)
+
+	# Off centre by a little and away from the middle, so two people joining in the same
+	# second are not put inside each other — which the solver resolves by flinging one of
+	# them off the platform.
+	var angle := float(players.size()) * 1.7
+	var reach := minf(deck.half * 0.5, 2.6)
+	var at := deck.centre + Vector3(cos(angle) * reach, 1.2, sin(angle) * reach)
+	var inward := deck.centre - at
+
+	player.place_at(at, rad_to_deg(atan2(-inward.x, -inward.z)))
 
 
 ## Which side somebody new goes on: the smallest one, ties to the lower id.
