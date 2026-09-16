@@ -48,6 +48,17 @@ const CATWALK_WIDTH := 3.4
 ## [b]Low, and it is not a wall.[/b] Falling is this map's one rule and it stays true in
 ## the showdown; what a lip stops is sliding off something you were not looking at, which
 ## is a death nobody chose. It is a kerb, not cover.
+const CORNER_LIP := 0.34
+
+## How wide the band around a pad's edge is, in metres.
+##
+## [b]The same answer the platforms reached, for the same reason, on the half of the map
+## where being wrong is permanent.[/b] A pad sixty metres up against a flat sky has no
+## horizon behind it and no neighbour beside it, so its edge seen from a standing player's
+## eye height is a line one pixel thick against a background the same brightness. The
+## platforms got a coloured band for this; the showdown was built without one because the
+## screenshot that would have shown it was taken from above.
+const PAD_BAND := 0.6
 const LIP_HEIGHT := 0.55
 
 @export var config: ScConfig = null
@@ -409,14 +420,16 @@ func _build_showdown() -> void:
 			"Catwalk%d" % index,
 			Vector3(at.x, middle.y, at.z),
 			Vector2(CATWALK_WIDTH, length),
-			ScTextures.Role.ARENA
+			ScTextures.Role.ARENA,
+			false
 		)
 		walk.rotation = Vector3(0.0, atan2(outward.x, outward.z), 0.0)
 
 
 ## One flat surface with a kerb around it.
 func _pad(
-	node_name: String, at: Vector3, size: Vector2, role: ScTextures.Role
+	node_name: String, at: Vector3, size: Vector2, role: ScTextures.Role,
+	ends: bool = true
 ) -> StaticBody3D:
 	var body := StaticBody3D.new()
 	body.name = node_name
@@ -442,9 +455,76 @@ func _pad(
 	mesh.material_override = ScTextures.surface(role)
 	body.add_child(mesh)
 
+	_build_kerb(body, size, ends)
+
 	_classify(body, &"world")
 	_showdown.add_child(body)
 	return body
+
+
+## The kerb this function's own name has promised since it was written.
+##
+## [b]It was documented in two places and built in neither.[/b] [constant CORNER_LIP] had a
+## doc comment explaining why the lip is low and is not cover, `_pad` was described as "one
+## flat surface with a kerb around it", and no line anywhere put one in the world — which is
+## the same shape of gap as a value produced correctly and consumed by nothing, and just as
+## invisible to a suite. A render of the showdown is what found it: three flat shapes
+## floating against a flat sky with no edge on any of them.
+##
+## Two things, and they do different jobs. The BAND is drawn a hair proud of the surface
+## with no collider, so an edge seen almost edge-on is still a line — that is the fix the
+## platforms already have. The KERB is a real collider standing on the band, low enough to
+## walk over deliberately and high enough to stop a body sliding off something its owner was
+## not looking at. Falling stays this map's one rule; what a kerb removes is the death
+## nobody chose.
+## [param ends] is false for a catwalk, and that is not a detail.
+##
+## A catwalk's two SHORT edges are its junctions with the pad at one end and the ring at the
+## other, so a kerb there is a step across the walkway rather than a rail beside it — a third
+## of a metre high, at the exact moment a player is running for cover. It cost nothing to see
+## in a render and would have been very hard to read as a bug from inside the game: a body
+## that catches on it reads as the movement code being wrong.
+func _build_kerb(body: StaticBody3D, size: Vector2, ends: bool = true) -> void:
+	var material := ScTextures.surface(ScTextures.Role.CANNON)
+
+	var edges: Array[Vector3] = [
+		Vector3(0.0, 0.0, size.y * 0.5 - PAD_BAND * 0.5),
+		Vector3(0.0, 0.0, -size.y * 0.5 + PAD_BAND * 0.5),
+		Vector3(size.x * 0.5 - PAD_BAND * 0.5, 0.0, 0.0),
+		Vector3(-size.x * 0.5 + PAD_BAND * 0.5, 0.0, 0.0),
+	]
+
+	for i in range(edges.size()):
+		if not ends and i < 2:
+			continue
+
+		var along_x := i >= 2
+		var span := Vector3(
+			PAD_BAND if along_x else size.x,
+			CORNER_LIP,
+			size.y if along_x else PAD_BAND
+		)
+
+		var mesh := MeshInstance3D.new()
+		mesh.name = "Kerb%d" % i
+		var box := BoxMesh.new()
+		box.size = span
+		mesh.mesh = box
+		# The pad's own surface is y = 0 on the body and the slab hangs below it, so the
+		# kerb sits on top with its own middle half a lip up. Measuring from the mesh's
+		# centre instead is what made the platforms' first rim invisible.
+		mesh.position = edges[i] + Vector3(0.0, CORNER_LIP * 0.5, 0.0)
+		mesh.material_override = material
+		body.add_child(mesh)
+
+		var shape := BoxShape3D.new()
+		shape.size = span
+
+		var collider := CollisionShape3D.new()
+		collider.name = "KerbHit%d" % i
+		collider.shape = shape
+		collider.position = mesh.position
+		body.add_child(collider)
 
 
 # --- Where a chopper waits --------------------------------------------------

@@ -119,7 +119,7 @@ Every one of these was found by running the game or by looking at a picture of i
 
 ## What DELIVERING it found
 
-These are separate from the list above because none of them can happen until the game is a pack: three suites, five renders and 280 checks all pass on a game that will not run when it is mounted. Publishing it and booting a server is its own step and it found four things in two boots.
+These are separate from the list above because none of them can happen until the game is a pack: three suites, five renders and 280 checks all pass on a game that will not run when it is mounted. Publishing it and booting a server is its own step, and rendering the delivered map is another; between them they found six things.
 
 - **Every path the publisher had already rewritten was rebased a second time.** `ScPropBody` loads its model from an exported `model_path`, and a publisher rewrites every `res://` string inside a `.tscn` onto the mount prefix — so the value arrives absolute and `rebase()` prefixed it again, producing `res://dot_cloud/tmc/smash/0.1.0/dot_cloud/tmc/smash/0.1.0/assets/kenney/car/debris-tire.glb`. It is long enough that the doubling reads as noise. This is the seventh form of the family's one delivery bug and it is written up in dot-server-deploy's own notes; `rebase()` returns a path already under the root unchanged.
 
@@ -128,6 +128,10 @@ These are separate from the list above because none of them can happen until the
 - **The combat manager set itself up twice**, because `DotCombatManager._ready` calls `setup()` and `_build_combat` called it again after `add_child`. The tell was a delivered log with every line `setup()` emits printed twice in a row.
 
 - **Lag compensation reported as unwired on a server where it works.** dot-combat defaults the flag on and warns as it comes up if no rewind function is there; the bridge wires one thirty lines later. The world builds with the flag OFF and `ScNetBridge` turns it on in the same breath as the two callables, so the boot line and the behaviour agree. The netcode suite now asserts all three together.
+
+- **The showdown's pads had no edge, and `_pad` said in its own name that they did.** A render of the corners from a player's height showed three flat shapes against a flat sky with nothing to mark where any of them stopped — the same readability problem the platforms had, on the half of the map where being wrong is permanent. `CORNER_LIP` had a doc comment explaining why the lip is low and is not cover, `_pad` was described as "one flat surface with a kerb around it", and no line anywhere built one. A value documented in two places and produced nowhere is as invisible to a suite as one produced and consumed by nothing.
+
+  The catwalks get the band on their two LONG sides only. A kerb across the short ends is a third of a metre of step at the junction a player is running through, and a body catching on it would have read as the movement code being wrong.
 
 - **dot-match warned once per player per round, for ever.** `_begin_round` enqueues everybody and drains the queue regardless of `respawn_disabled`, so this game — which places its own players and deliberately has no `DotSpawnPoint` anywhere — got "no usable spawn point at all" four times at every round start. Fixed in dot-match rather than here: `choose_spawn` returns null when there are no points at all, because an empty list is a game that computes its own positions and `refresh_spawns` has already warned once if that was an accident. The selector's warning still fires for its real meaning, which is that it was given points and could not use one.
 
