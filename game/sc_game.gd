@@ -467,20 +467,43 @@ func _build_combat() -> void:
 	rules.hit_groups = true
 	combat.rules = rules
 
-	add_child(combat)
-	var _ready_now := combat.setup()
+	# [b]Lag compensation is OFF here and turned on by the bridge, in the same breath as the
+	# callables that make it real.[/b] dot-combat defaults it on, checks for a rewind
+	# function as it comes up, and says "lag compensation is enabled but no rewind function
+	# is wired; shots resolve against the present" when it finds none — which is exactly true
+	# of a world with no netcode, and exactly false of this one thirty lines later, when
+	# [ScNetBridge] hands over dot-net's history. Leaving the default meant a delivered server
+	# logged that line at every boot about a server where lag compensation works.
+	#
+	# It is also the honest answer for the world a client builds when it is playing alone:
+	# there is no history to rewind, so there is no compensation, and the log should say so.
+	var settings := DotCombatConfig.new()
+	settings.lag_compensation = false
+	combat.config = settings
 
 	# [b]A trace, or every shot in the showdown goes through the arena.[/b] dot-combat
 	# resolves hitboxes analytically and asks a [DotTrace] where the WORLD is — and left
-	# unset it warns once at boot and then quietly reports that nothing was in the way, so
-	# two players on opposite sides of a catwalk shoot each other through it. The manager
-	# says so on startup; this is the line that answers it.
+	# unset it quietly reports that nothing was in the way, so two players on opposite sides
+	# of a catwalk shoot each other through it.
+	#
+	# [b]Before `setup()`, not after.[/b] The manager checks for one as it comes up and warns
+	# when it finds none, so assigning it on the next line leaves a server log saying "no
+	# trace backend; every shot will pass through world geometry" about a server where every
+	# shot does not. A warning that is answered a line later is a warning an operator learns
+	# to skim.
 	var trace := DotTracePhysics.for_world(get_world_3d())
 
 	if physics != null:
 		trace.collision_mask = physics.layer_mask(&"world")
 
 	combat.trace = trace
+
+	# [b]`add_child` IS the setup.[/b] [DotCombatManager._ready] calls `setup()` itself, so the
+	# explicit call this used to make ran the whole of it a second time — and the tell was in
+	# the delivered server's log, where every message `setup()` emits appeared twice in a row.
+	# `setup()` is documented safe to call twice and it is; what it is not is free, and a
+	# doubled boot line is how a reader finds out there are two of something.
+	add_child(combat)
 
 
 ## The effects layer, which in this game is a shake and a flash and nothing else.

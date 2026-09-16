@@ -43,7 +43,7 @@ assets/kenney/      eight CC0 models and two atlases
 assets/{blaster-kit,melee,arms}/  the weapon pack's own art, vendored
 textures/prototype/ six CC0 prototype textures, one per role
 scenes/             sc_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (95), dedicated (43), headless_net (131)
+examples/           headless_run (103), dedicated (43), headless_net (134)
 tools/              shot.gd/.tscn/.sh — render a frame and look at it
 ```
 
@@ -117,6 +117,20 @@ Every one of these was found by running the game or by looking at a picture of i
 
 - **The health number was drawn underneath the chat box.** Both anchor bottom-left. Invisible to every headless assertion, because a headless viewport is 64 × 64 and nothing in one can overlap anything.
 
+## What DELIVERING it found
+
+These are separate from the list above because none of them can happen until the game is a pack: three suites, five renders and 280 checks all pass on a game that will not run when it is mounted. Publishing it and booting a server is its own step and it found four things in two boots.
+
+- **Every path the publisher had already rewritten was rebased a second time.** `ScPropBody` loads its model from an exported `model_path`, and a publisher rewrites every `res://` string inside a `.tscn` onto the mount prefix — so the value arrives absolute and `rebase()` prefixed it again, producing `res://dot_cloud/tmc/smash/0.1.0/dot_cloud/tmc/smash/0.1.0/assets/kenney/car/debris-tire.glb`. It is long enough that the doubling reads as noise. This is the seventh form of the family's one delivery bug and it is written up in dot-server-deploy's own notes; `rebase()` returns a path already under the root unchanged.
+
+- **And the check for it passed with the bug put back.** Built in, `root()` is `res://` and every `res://` path is already under it, so every property of `rebase()` that matters in a pack is a tautology here. The idempotence was asserted, the fix was reverted, and the suite reported 101 passed and 0 failed. `ScPaths.rebase_onto(path, root)` exists so the suite can hand it a real mount prefix, and `rebase()` is one line over it. **Arming a guard means checking it fails, and this one is the reason that rule is in the family's notes.**
+
+- **The combat manager set itself up twice**, because `DotCombatManager._ready` calls `setup()` and `_build_combat` called it again after `add_child`. The tell was a delivered log with every line `setup()` emits printed twice in a row.
+
+- **Lag compensation reported as unwired on a server where it works.** dot-combat defaults the flag on and warns as it comes up if no rewind function is there; the bridge wires one thirty lines later. The world builds with the flag OFF and `ScNetBridge` turns it on in the same breath as the two callables, so the boot line and the behaviour agree. The netcode suite now asserts all three together.
+
+- **dot-match warned once per player per round, for ever.** `_begin_round` enqueues everybody and drains the queue regardless of `respawn_disabled`, so this game — which places its own players and deliberately has no `DotSpawnPoint` anywhere — got "no usable spawn point at all" four times at every round start. Fixed in dot-match rather than here: `choose_spawn` returns null when there are no points at all, because an empty list is a game that computes its own positions and `refresh_spawns` has already warned once if that was an accident. The selector's warning still fires for its real meaning, which is that it was given points and could not use one.
+
 ## The netcode
 
 `game/net/` and `game/sc_module.gd`. What is worth having here is the shape.
@@ -169,9 +183,9 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 13 sections, 95 checks
+godot --headless --path . res://examples/headless_run.tscn   # 14 sections, 103 checks
 godot --headless --path . res://examples/dedicated.tscn      # 7 sections, 43 checks
-godot --headless --path . res://examples/headless_net.tscn   # 14 sections, 131 checks
+godot --headless --path . res://examples/headless_net.tscn   # 14 sections, 134 checks
 tools/shot.sh --view=field
 tools/shot.sh --view=lean
 tools/shot.sh --view=copter
@@ -196,7 +210,6 @@ godot --headless --path ../mg-smash-copter --import   # form five: a pack cannot
 
 In the order they are worth doing.
 
-1. **Replicate the weapons.** `ZeeWeaponNet.all_specs()` is four fields on top of dot-weapon's three, and without them a watcher does not see anybody else's gun and the local view model is drawn from a rig the server never confirms.
-3. **Lag compensation.** Two callables on `DotCombatManager` and a history of hitbox transforms per tick.
-4. **Publish it as a pack and connect a real client.** Nothing here has been mounted.
-5. **An identity layer**, if this game ever wants profiles and avatars.
+1. **Connect a real client shell to a delivered server.** The pack is published, signed and mounted, and a server runs whole rounds out of it with a clean log — but every player in those rounds is a bot, so Godot's own RPC routing over a real socket is still the one layer nothing here has exercised. It is where five of mg-buses-from-hell's bugs came from.
+2. **A world model in a watcher's hands.** The weapon state replicates and `ZeeWeaponNet.apply` already takes a null model; what is missing is a character with a hand mount, and this game draws players as capsules.
+3. **An identity layer**, if this game ever wants profiles and avatars. dot-game reports the gap at boot and carries on, which is a server where everybody is a guest.

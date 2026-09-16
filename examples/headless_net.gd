@@ -39,7 +39,7 @@ const ScSpecials := preload("../game/sc_specials.gd")
 ## and LAYOUT correct it.
 
 const SECTIONS := 14
-const CHECKS := 131
+const CHECKS := 134
 
 ## Who the client is, on both ends.
 const CLIENT_PEER := 7
@@ -450,6 +450,27 @@ func _build() -> bool:
 		int(_server_bridge.describe()["bodies"]) > 0,
 		"and the server's field is replicated from the moment it is laid out",
 		"%d bodies" % int(_server_bridge.describe()["bodies"])
+	)
+
+	# [b]The flag and the callable together, because either alone is a lie.[/b] dot-combat
+	# defaults lag compensation ON and resolves every shot against the present when nothing
+	# is wired to it, so a server can report the feature as enabled and not have it — this
+	# family's second most repeated bug, and one a delivered boot log caught here saying so
+	# twice. The world builds with it off and the bridge turns it on in the same breath as
+	# the two callables, so these three checks are one fact asserted from three sides.
+	#
+	# Armed: with the assignment in `_wire_lag_compensation` removed, the first fails.
+	_check(
+		_server_game.combat.rewind_fn.is_valid(),
+		"the server's combat can rewind"
+	)
+	_check(
+		_server_game.combat.restore_fn.is_valid(),
+		"and put everything back"
+	)
+	_check(
+		_server_game.combat.config.lag_compensation,
+		"and only then does it say lag compensation is on"
 	)
 
 	_finished()

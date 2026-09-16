@@ -8,6 +8,7 @@ const ScCopter := preload("../game/sc_copter.gd")
 const ScGame := preload("../game/sc_game.gd")
 const ScLayouts := preload("../game/sc_layouts.gd")
 const ScPlatforms := preload("../game/sc_platforms.gd")
+const ScPaths := preload("../game/sc_paths.gd")
 const ScPlayer := preload("../game/sc_player.gd")
 const ScSpecials := preload("../game/sc_specials.gd")
 
@@ -29,7 +30,7 @@ const ScSpecials := preload("../game/sc_specials.gd")
 ## `set_physics_process(false)` goes on first and every section advances the world itself.
 
 ## Sections entered, against sections that ran to their last line.
-const SECTIONS := 13
+const SECTIONS := 14
 
 ## And the total this counter cannot be.
 ##
@@ -37,7 +38,7 @@ const SECTIONS := 13
 ## checks that already ran still print ok, the ones after it never happen, and the section
 ## counter is satisfied because the section announced itself on the way in. dot-settings
 ## reported "8 sections, 63 passed, 0 failed" and exited 0 with eight checks missing.
-const CHECKS := 95
+const CHECKS := 103
 
 const TICK_RATE := 64
 const TICK := 1.0 / float(TICK_RATE)
@@ -62,6 +63,7 @@ func _run() -> void:
 	print("")
 
 	_test_config()
+	_test_delivery()
 	_test_layouts()
 	await _test_world_builds()
 	await _test_a_platform_leans()
@@ -802,6 +804,121 @@ func _test_the_chopper() -> void:
 
 	await _dispose(game)
 	_finished()
+
+
+## [b]The one thing neither the suite nor the editor can see: what happens once this is a
+## pack.[/b] Every finding in this section came from a delivered server rather than from
+## here, and each is a check written afterwards so the next one is caught before the boot.
+func _test_delivery() -> void:
+	_section("a delivered pack's own paths still resolve")
+
+	# The seventh form of the family's delivery bug, and the one that cost a boot. A
+	# publisher REWRITES every `res://` string inside a `.tscn` onto the mount prefix, so an
+	# exported `model_path` arrives at runtime already absolute — and rebasing it a second
+	# time produced `res://dot_cloud/tmc/smash/0.1.0/dot_cloud/tmc/smash/0.1.0/assets/...`,
+	# which does not load and is long enough that the doubling is easy to read past.
+	#
+	# Armed: reverted to the unconditional `root().path_join(...)` this fails, and the two
+	# below it pass — which is what makes it worth having as its own check.
+	# [b]Against a root given rather than the one this build has.[/b] Built in, `root()` is
+	# `res://` and every `res://` path is already under it — so `rebase` is the identity here
+	# however it is written, and asserting its behaviour against the real root passes with
+	# the bug put back. That is measured: it did. [method ScPaths.rebase_onto] is the same
+	# function taking the prefix, and this is the only way the mounted case is reachable
+	# from a build.
+	const MOUNT := "res://dot_cloud/tmc/smash/0.1.0"
+
+	var once := ScPaths.rebase_onto("res://assets/kenney/car/debris-tire.glb", MOUNT)
+	_check(
+		once == MOUNT + "/assets/kenney/car/debris-tire.glb",
+		"a path a script wrote is moved onto the mount",
+		once
+	)
+	_check(
+		ScPaths.rebase_onto(once, MOUNT) == once,
+		"and one the publisher already rewrote is left alone"
+	)
+
+	_check(
+		ScPaths.rebase("res://props/sc_crate.tscn") == ScPaths.root().path_join("props/sc_crate.tscn"),
+		"and the real root is what rebase uses"
+	)
+
+	_check(
+		ScPaths.rebase("user://recording.dat") == "user://recording.dat",
+		"a path that is not res:// comes back untouched"
+	)
+
+	_check(
+		ScPaths.rebase("res://textures/%s.png") % "deck" == ScPaths.rebase("res://textures/deck.png"),
+		"a format specifier survives being rebased"
+	)
+
+	# Form one: a `class_name` in a game repository is a global the HOST does not register,
+	# so a delivered pack mounts with every script in it dead and nothing reporting it. The
+	# deploy tool refuses one; this says so here as well, because the deploy tool is not what
+	# somebody adding a file runs.
+	var declared := PackedStringArray()
+
+	for path: String in _scripts_here():
+		var text := FileAccess.get_file_as_string(path)
+
+		for line: String in text.split("\n"):
+			if line.begins_with("class_name "):
+				declared.append(path)
+				break
+
+	_check(declared.is_empty(), "no script in this game declares a class_name", ", ".join(declared))
+
+	# Form four: the pack carries what it references. Every model and atlas named in a prop
+	# scene has to exist, because a missing one is a prop that spawns, falls, lands and
+	# damages a platform while being invisible — which is what game-buses-from-hell shipped.
+	var missing := PackedStringArray()
+	var referenced := 0
+
+	for path: String in _prop_scenes():
+		var text := FileAccess.get_file_as_string(path)
+
+		for line: String in text.split("\n"):
+			if not (line.begins_with("model_path") or line.begins_with("atlas_path")):
+				continue
+
+			var quoted := line.get_slice("\"", 1)
+
+			if quoted == "":
+				continue
+
+			referenced += 1
+
+			if not ResourceLoader.exists(quoted) and not FileAccess.file_exists(quoted):
+				missing.append(quoted)
+
+	_check(referenced > 0, "the prop scenes name their art by path", "%d references" % referenced)
+	_check(missing.is_empty(), "every model and atlas a prop scene names is in this repository", ", ".join(missing))
+
+	_finished()
+
+
+## Every script this game owns. Not `addons/`, which is somebody else's rules.
+func _scripts_here() -> PackedStringArray:
+	var found := PackedStringArray()
+
+	for directory: String in ["res://game", "res://game/net", "res://props", "res://examples", "res://tools"]:
+		for file: String in DirAccess.get_files_at(directory):
+			if file.ends_with(".gd"):
+				found.append(directory.path_join(file))
+
+	return found
+
+
+func _prop_scenes() -> PackedStringArray:
+	var found := PackedStringArray()
+
+	for file: String in DirAccess.get_files_at("res://props"):
+		if file.ends_with(".tscn"):
+			found.append("res://props".path_join(file))
+
+	return found
 
 
 # --- The harness ------------------------------------------------------------
