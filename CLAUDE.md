@@ -159,7 +159,7 @@ These are separate from the list above because none of them can happen until the
 
 **`examples/headless_net.tscn` is the real path minus the socket.** Two worlds, two managers, two bridges and two links with the RPC replaced by a callable — so the encoders, the seal, the snapshot build, the prediction and the reconciliation all run. The client is deliberately given a different tick rate and a different field than the server, because one process has one engine rate and one default configuration: two halves that agree by construction make every assertion that they agree pass for the wrong reason. Four of the findings above came from it, and it cannot see Godot's own RPC routing — that is what `dedicated.tscn` and a real client are for.
 
-**The snapshot rate is thirty, against the twenty game-buses-from-hell uses.** Almost nothing here is predicted and the one thing a player has to read continuously is the lean of the floor they are standing on, which arrives only in a snapshot. At twenty, a platform's tilt updates in visible steps — and a step in the surface under your feet reads as the game stuttering.
+**The snapshot rate is thirty, against the twenty mg-buses-from-hell uses.** Almost nothing here is predicted and the one thing a player has to read continuously is the lean of the floor they are standing on, which arrives only in a snapshot. At twenty, a platform's tilt updates in visible steps — and a step in the surface under your feet reads as the game stuttering.
 
 ## The chopper is a fourth chassis
 
@@ -188,7 +188,7 @@ Six prototype textures by role, eight models from two kits, and the weapon pack'
 
 **The two `Textures/colormap.png` are different files with the same name**, so each kit is in its own folder. Flattening them paints the survival props in the car kit's palette, which is a plausible-looking wrong answer no assertion would ever catch.
 
-**The models are loaded by PATH rather than instanced as an `ext_resource`**, which is a delivery decision. A `.tscn` records an external resource as an absolute path plus a UID and inside a mounted pack neither resolves; game-buses-from-hell shipped a round where every crate's mesh loaded and every crate's texture did not, which is a game that plays perfectly and appears to have shipped without art. `ScPropBody` loads through `rebase()` and puts the atlas on by hand where one is missing — which in a build does exactly nothing.
+**The models are loaded by PATH rather than instanced as an `ext_resource`**, which is a delivery decision. A `.tscn` records an external resource as an absolute path plus a UID and inside a mounted pack neither resolves; mg-buses-from-hell shipped a round where every crate's mesh loaded and every crate's texture did not, which is a game that plays perfectly and appears to have shipped without art. `ScPropBody` loads through `rebase()` and puts the atlas on by hand where one is missing — which in a build does exactly nothing.
 
 ## Validating
 
@@ -210,7 +210,7 @@ All three suites count sections **and** a total, and the total is the one that c
 
 **The render is not optional.** Four of the entries above were found by looking at a picture and are invisible to every assertion in this repository. `tools/shot.sh` is not `--headless`: Godot's headless display driver does no rendering at all, so a capture under it is a black PNG, which is worse than no screenshot because it looks like one.
 
-**And neither suite reaches the deployment**, which is where five of game-buses-from-hell's bugs came from. That needs the real thing:
+**And neither suite reaches the deployment**, which is where five of mg-buses-from-hell's bugs came from. That needs the real thing:
 
 ```bash
 # in dot-server-deploy
