@@ -1,8 +1,21 @@
-# mg-smash-copter
+This is a **game** built on TMC's **Dot** collection, rather than a piece of it. Its antagonist is the floor: platforms balanced on single pillars, forty metres up, and a cannon in the middle throwing things at whoever is standing on them.
+
+The **Dot** collection is a set of open source Godot 4 assets that provide modular building blocks for games and applications in the TMC ecosystem, covering core functionality, networking, authentication, cloud integration, and more. This project is built out of them, so it doubles as a worked example of what they look like in a real game rather than in a demo.
+
+**This project and the assets under it are COMPLETELY OPEN SOURCE**. You are free to use, modify, and distribute them under the terms of the MIT license. The only thing not open source is the back-end web infrastructure. So if you opt into using your own authentication backend instead of integrating with TMC, you will need to build and integrate your own back-end infrastructure.
+
+## From Maintainer & WARNING
+This project, along with every asset it is built on, was built initially with **Claude Code** and will continue to be maintained and extended using it. This is because I (`gamemann`) cannot build the entire TMC platform alone (I wish I could lol).
+
+**Please treat this as partially tested.** It has its own headless test suite and that suite passes, but very little of this has been in front of real players yet. Expect rough edges, and please report anything you run into.
+
+I intend on reviewing code, testing, and editing documentation regularly. If you're interested in helping out, please let me know!
+
+## A Platform, a Pillar and a Cannon
 
 Two to six teams stand on platforms balanced on single pillars, forty metres up, while a cannon in the middle throws things at them. Whoever is still up when the clock runs out is thrown into a corner of the sky with a weapon they did not choose, and the last team standing wins.
 
-It is a first- and third-person multiplayer minigame built on the `dot-*` addon family: [dot-props](../dot-props) for everything the cannon throws, [dot-vehicle](../dot-vehicle) for the chopper, [dot-combat](../dot-combat) for health and hit registration, [dot-match](../dot-match) for the round and the sides, [dot-player-controller](../dot-player-controller) for the movement, [dot-net](../dot-net) for the replication, [dot-game](../dot-game) for the server wiring and [zee-dot-weapons](../zee-dot-weapons) for the twenty-seven weapons the second half is fought with.
+It is a first- and third-person multiplayer minigame built on the `dot-*` addon family: [dot-props](https://github.com/modcommunity/dot-props) for everything the cannon throws, [dot-vehicle](https://github.com/modcommunity/dot-vehicle) for the chopper, [dot-combat](https://github.com/modcommunity/dot-combat) for health and hit registration, [dot-match](https://github.com/modcommunity/dot-match) for the round and the sides, [dot-player-controller](https://github.com/modcommunity/dot-player-controller) for the movement, [dot-net](https://github.com/modcommunity/dot-net) for the replication, [dot-game](https://github.com/modcommunity/dot-game) for the server wiring and [zee-dot-weapons](https://github.com/gamemann/zee-dot-weapons) for the twenty-seven weapons the second half is fought with.
 
 ## Running it
 
@@ -127,3 +140,9 @@ The map itself is built in code. A grid of squares on pillars, a cylinder in the
 - **Nobody draws somebody else's gun.** The weapon state replicates — the slot, the reload, the switch and a use counter — but hanging a world model on a watcher's copy of a player needs a character with a hand mount, and this game draws players as capsules.
 - **Stand-ins fall off more than they shoot.** Two thirds of the deaths in a showdown played by stand-ins are falls. They are four lines of brain with an aim error, which is enough to make an empty server look alive and is not a bot worth fighting. `sc_bot_advance` and `sc_bot_spread` are the two knobs.
 - **No profiles and no avatars.** dot-game reports the missing identity layer and carries on, which is a server where everybody is a guest.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
+
+The art is the exception, and it is a more permissive one: the prototype textures and every kit the cannon throws are [Kenney's](https://kenney.nl), released under CC0 1.0, which is public domain with no attribution required. Each kit's own licence text ships unchanged beside the files it covers.
