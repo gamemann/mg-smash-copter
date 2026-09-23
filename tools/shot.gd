@@ -2,6 +2,7 @@ extends Node
 
 const ScGame := preload("../game/sc_game.gd")
 const ScPlatforms := preload("../game/sc_platforms.gd")
+const ScLayouts := preload("../game/sc_layouts.gd")
 
 ## Renders the game and exits. The check no assertion in this repository makes.
 ##
@@ -25,6 +26,7 @@ const ScPlatforms := preload("../game/sc_platforms.gd")
 ## tools/shot.sh --view=lean      # a platform that has been leant on, from its own level
 ## tools/shot.sh --view=copter    # the chopper, close
 ## tools/shot.sh --view=showdown  # the corners the round is finished in
+## tools/shot.sh --view=jump      # the first jump the layout means, from behind the runner
 ## [/codeblock]
 
 const CHANNEL := "sc.shot"
@@ -125,6 +127,22 @@ func _place_camera(game: ScGame, view: String) -> void:
 				var at := copter.position()
 				camera.global_position = at + Vector3(9.0, 3.4, 9.0)
 				camera.look_at(at, Vector3.UP)
+		"jump":
+			# [b]From where a runner stands before the jump the layout MEANS[/b], a little
+			# above their eye, looking along the line they will run. A field from above says
+			# where the platforms are and nothing about whether the gap between two of them
+			# is a jump; this is the picture of the one question the reach section asks.
+			var pair := _first_meant_jump(game)
+
+			if pair == Vector2i(-1, -1):
+				camera.global_position = Vector3(0.0, game.config.deck_height + 18.0, 42.0)
+				camera.look_at(Vector3(0.0, game.config.deck_height, 0.0), Vector3.UP)
+			else:
+				var from := game.platforms.deck_at(pair.x).centre
+				var to := game.platforms.deck_at(pair.y).centre
+				var line := Vector3(to.x - from.x, 0.0, to.z - from.z).normalized()
+				camera.global_position = from - line * 4.0 + Vector3.UP * 3.2
+				camera.look_at(to + Vector3.UP * 0.5, Vector3.UP)
 		"showdown":
 			var middle := game.arena.showdown_centre()
 			camera.global_position = middle + Vector3(
@@ -137,6 +155,18 @@ func _place_camera(game: ScGame, view: String) -> void:
 
 	camera.current = true
 	await get_tree().process_frame
+
+
+## The first pair of platforms the round's layout means a player to jump between.
+func _first_meant_jump(game: ScGame) -> Vector2i:
+	if game.layout == null or game.layout.jumps == 0:
+		return Vector2i(-1, -1)
+
+	for pair: Vector3i in ScLayouts.pairs(game.platforms.cells()):
+		if (game.layout.jumps & pair.z) != 0:
+			return Vector2i(pair.x, pair.y)
+
+	return Vector2i(-1, -1)
 
 
 ## Leans the first platform hard, so there is something to photograph.

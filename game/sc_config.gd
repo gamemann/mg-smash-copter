@@ -223,6 +223,13 @@ extends DotConfig
 ## it, is a different round to play.
 @export var vary_layout: bool = true
 
+## Which layouts this server may draw, by id. Empty means all of them.
+##
+## The same shape as [member special_ids], for the same reason: the catalogue is data, and
+## an operator running one layout all evening — or a render of one — is a word on a line
+## rather than a code change. `--sc-layout-ids=checker` is how `tools/shot.sh` looks at one.
+@export var layout_ids: PackedStringArray = PackedStringArray()
+
 ## Seed the layouts, the cannon and the special rounds are all drawn from.
 ##
 ## [b]A seed rather than a fixed schedule, and it is reproducible on purpose.[/b] Two

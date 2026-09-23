@@ -553,7 +553,9 @@ func _describe_layout() -> PackedByteArray:
 		game.config.deck_height,
 		layout.pitch_scale if layout != null else 1.0,
 		layout.stiffness_scale if layout != null else 1.0,
-		game.platforms.cells()
+		game.platforms.cells(),
+		layout.row_pitch_scale if layout != null else 1.0,
+		layout.row_shift if layout != null else 0.0
 	)
 
 
@@ -1405,7 +1407,9 @@ func _apply_layout(reader: DotNetReader) -> void:
 		described["cells"],
 		float(described["pitch_scale"]),
 		float(described["stiffness_scale"]),
-		game.physics
+		game.physics,
+		float(described.get("row_pitch_scale", 1.0)),
+		float(described.get("row_shift", 0.0))
 	)
 
 	# The arena is derived from the same numbers, so it is rebuilt with them. A client whose

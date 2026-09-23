@@ -158,7 +158,7 @@ static func read_hello(r: DotNetReader) -> Dictionary:
 
 ## The whole of this round's geometry.
 ##
-## [b]Seven numbers, and the client builds the identical field from them.[/b] The layout id
+## [b]Nine numbers, and the client builds the identical field from them.[/b] The layout id
 ## chooses which cells carry a platform and where the bridges go; the rest is the scale the
 ## server is playing at, which an operator may have changed with a cvar. A client that
 ## guessed any of them would build a field whose platform seven is somewhere else — and
@@ -173,7 +173,9 @@ static func write_layout(
 	deck_height: float,
 	pitch_scale: float,
 	stiffness_scale: float,
-	cells: Array[Vector3i]
+	cells: Array[Vector3i],
+	row_pitch_scale: float = 1.0,
+	row_shift: float = 0.0
 ) -> PackedByteArray:
 	var w := _w()
 	w.write_string(String(layout_id), ID_BYTES)
@@ -191,6 +193,11 @@ static func write_layout(
 	w.write_float_range(deck_height, 0.0, 512.0, 20)
 	w.write_float_range(pitch_scale, 0.0, 4.0, 16)
 	w.write_float_range(stiffness_scale, 0.0, 4.0, 16)
+	# The rows' own scale, which only the chequerboard moves off one. A client that built
+	# it at the configured spacing would put its second row 11.4 m from the server's.
+	w.write_float_range(row_pitch_scale, 0.0, 4.0, 16)
+	# And how far the field is moved along the rows, which only the chequerboard does.
+	w.write_float_range(row_shift, -2.0, 2.0, 16)
 
 	# The field itself, one cell at a time. Eleven bits each and never more than a couple of
 	# dozen of them, which is thirty-odd bytes once a round for the one thing both ends have
@@ -215,6 +222,8 @@ static func read_layout(r: DotNetReader) -> Dictionary:
 	var deck_height := r.read_float_range(0.0, 512.0, 20)
 	var pitch_scale := r.read_float_range(0.0, 4.0, 16)
 	var stiffness_scale := r.read_float_range(0.0, 4.0, 16)
+	var row_pitch_scale := r.read_float_range(0.0, 4.0, 16)
+	var row_shift := r.read_float_range(-2.0, 2.0, 16)
 
 	var count := r.read_uint(PLATFORM_BITS)
 	var cells: Array[Vector3i] = []
@@ -236,6 +245,8 @@ static func read_layout(r: DotNetReader) -> Dictionary:
 		"deck_height": deck_height,
 		"pitch_scale": pitch_scale,
 		"stiffness_scale": stiffness_scale,
+		"row_pitch_scale": row_pitch_scale,
+		"row_shift": row_shift,
 		"ok": r.ok(),
 	}
 

@@ -20,7 +20,7 @@ game/
   sc_config.gd      every number, in metres and seconds, layered like every DotConfig
   sc_textures.gd    the six prototype textures, by ROLE, and the grid that stands in
   sc_content.gd     the prop catalogue in four tiers, and the chopper. The design, as data
-  sc_layouts.gd     eight arrangements of the field, as documents
+  sc_layouts.gd     eight arrangements of the field, as documents, and the jumps each means
   sc_specials.gd    nine things that go wrong, as multipliers
   sc_arena.gd       the sky, the floor, the tube and the corners. In code
   sc_platforms.gd   THE FILE. A slab on a pillar, as a spring this integrates
@@ -43,8 +43,8 @@ assets/kenney/      eight CC0 models and two atlases
 assets/{blaster-kit,melee,arms}/  the weapon pack's own art, vendored
 textures/prototype/ six CC0 prototype textures, one per role
 scenes/             sc_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (116), dedicated (44), headless_net (134)
-tools/              shot.gd/.tscn/.sh — render a frame and look at it
+examples/           headless_run (131), dedicated (44), headless_net (135)
+tools/              shot.gd/.tscn/.sh — render a frame and look at it; any --sc-* is config
 ```
 
 ## Decision 1: a platform is not a rigid body, and it must not be
@@ -71,9 +71,27 @@ A crate wobbles a platform, a boulder tips it, a container takes a corner off it
 
 ## Decision 4: the map is a description, not a build
 
-A round's field is an id, six numbers and a list of cells. A client rebuilds the identical field from them, every platform comes out in the same order, and a snapshot then moves platform number seven without ever saying what a platform is.
+A round's field is an id, a handful of numbers and a list of cells. A client rebuilds the identical field from them, every platform comes out in the same order, and a snapshot then moves platform number seven without ever saying what a platform is.
 
 **The cell list travels rather than the layout id alone**, and that is a decision about what "agree" means. A client deriving the field from a catalogue of its own would build the right field right up until its build was one layout behind the server's — and then its platform seven would be somewhere else and every snapshot after that would move the wrong floor, silently. Thirty-odd bytes once a round buys the whole class of bug.
+
+## What a level is here, for the nightly quota
+
+Decided 2026-09-23 so every run applies the quota the same way. **A level is a change to where a player can stand or go** — the platform field or the showdown — and it ships with its jumps declared, measured against the movement's reach, driven by a bot and rendered. In order of preference, because extending comes before adding:
+
+1. **An existing layout document in `ScLayouts` rebuilt so it plays the way its own blurb says.** Eight layouts, most of them made of numbers nobody had asked a player to cross; that is where there is room to grow.
+2. **A walkable extension of the showdown complex in `ScArena`** — a new piece of the sky a survivor can get to on foot.
+3. **A ninth layout, only if it needs something the vocabulary lacks**: a new `Gaps` or `Bridges` shape, or a new number on `Layout` that travels on the wire (`row_pitch_scale` and `row_shift` are the two added for the chequerboard). A ninth row that only recombines existing enums and scales is a variant, not a level.
+
+**Not a level**: a special round (it changes numbers, not where anybody stands), a layout's weight, a cvar default, a prop. Every level declares `Layout.jumps`, passes `headless_run`'s reach and throat sections, gets a section that drives a bot through the property it is about, and is rendered with `tools/shot.sh --view=jump --sc-layout-ids=<id>` (and `--view=field`).
+
+## Reach: a jump here is measured, not sized by eye
+
+`ScPlayer.jump_reach(config, rise)` is the clear air a running player crosses landing `rise` metres higher, read off `tunables_for` rather than off copied constants — game-arena and game-playground each carry the same arithmetic over their own copies. **The rise is never zero on this map, and that is the part that is this game's own**: a runner leans the platform toward the edge they are running at, so the lip they leave from has dropped by the time they reach it — about 0.3 m mid-edge and 0.8 m at a corner, against a 1.15 m apex. The suite steps `ScPlatforms`' own model along the run to measure that dip for every route; it is most of the difference between a jump and a wall.
+
+`Layout.jumps` declares which KINDS of jump a layout means (`ALONG_ROWS`, `ACROSS_HOLES`, `ACROSS_ROWS`, `DIAGONALS`), `ScLayouts.pairs()` turns the kinds into pairs off the cell list the field is built from, and `ScPlatforms.clear_air()` measures the air along the line a runner takes. The sweep is **both ways**: a declared jump has to be inside the reach, and an undeclared one has to be outside even a flat running jump, because "Nobody is crossing" and "Every platform stands alone" are promises too. Tightest declared jumps at the ordinary numbers: the chequerboard's diagonals, 2.83 m of 3.24; broadside, 3.41 of 3.95; everything else 2.61 or less.
+
+The showdown is reached by teleport, not by a jump, so its question is whether a survivor can WALK from their pad along a catwalk onto the ring — which is driven, with two sides (square junctions) and three (oblique ones). A parked chopper comes to rest on whatever is under its pad, so every layout with one has to have a platform there. Measured 2026-09-23; the list below has what it found.
 
 ## Decision 5: no dot-spawn
 
@@ -123,6 +141,12 @@ Every one of these was found by running the game or by looking at a picture of i
 
 - **Every round leaked a lag-compensation track per platform.** The round begins inside `DotNetManager.server_tick`, which records history for the identity list it took before the old field was let go of — re-creating a track for each id the registry had just told it to forget. Twelve per round, for the life of the server, and nothing reads them. The bridge forgets them again once the manager's tick returns; the dedicated suite counts orphaned tracks. The ten `!is_inside_tree()` engine errors at round one are the same stale list and are dot-net's to fix.
 
+- **The chequerboard had no jumps on it at all.** Its blurb is "Every jump is a diagonal", and a chequerboard's diagonals run from one ROW to the other — and the rows were 13.5 m of air apart on every layout. So it was five islands, 14.6 m apart along every diagonal against a running jump of 3.9, and a 0.88 column scale under a comment saying it "widened" the diagonals narrowed a spacing no diagonal crosses. The rows are pulled in to 0.525 of the pitch now and the field is moved half a row over (see the next entry), so each diagonal is 2.8 m of air and the next platform along a row is 12.3 m; `headless_run` drives a runner along all four diagonals and then straight along a row, which is a fall.
+
+- **Every cannon shot on The Spine went up into a bridge.** The tube stands in the middle of the field with its muzzle three metres under the decks, and on five columns and two rows the middle column's bridge is directly on top of it — forty shots in forty hit its underside and never cleared the decks, on a layout drawn one round in nine. No check fired a shot on any layout but the first. The middle bridge is not built now (`_has_bridge`), `ScArena.THROAT_CLEARANCE` is the 2.5 m a tumbling monolith sweeps, and the throat section measures every layout against it and then fires eight all-tier shots at each. Pulling the chequerboard's rows together put its middle platform 1.05 m from the same line and one shot in twenty into its underside, which is why that field is moved half a row over: the tube stands in the hole where (2,1) would be.
+
+- **A survivor could not walk off their own corner.** The catwalks were given kerbs on their long sides only, so that a junction would not be a step — and the pad's and the ring's own kerbs ran straight across those same junctions from the other side. dot-player-controller's step-up does not take a 0.34 m kerb 0.6 m deep at a walk or a run, whatever `step_height` says, so a runner stopped dead at their pad's edge and again at the ring's. "A pad is edged on four sides and a catwalk on two" counted the kerbs and passed. `_build_kerb` cuts an opening wherever a catwalk's strip crosses an edge, square on or oblique; the check counts SIDES now, and the showdown walk is what fails with the openings taken out.
+
 - **The camera moved only on a tick.** It hangs off the player's node, which the tick writes, so at 64 ticks against 144 frames 160 frames in 288 did not move at all while the player ran. `_process` draws the rig from `DotFpsController.render_state` now (per-frame speed variation 112% to 3%, measured), and `place_at` goes through `teleport` so the handover does not sweep the view across the map for a frame.
 
 ## What DELIVERING it found
@@ -139,7 +163,7 @@ These are separate from the list above because none of them can happen until the
 
 - **The showdown's pads had no edge, and `_pad` said in its own name that they did.** A render of the corners from a player's height showed three flat shapes against a flat sky with nothing to mark where any of them stopped — the same readability problem the platforms had, on the half of the map where being wrong is permanent. `CORNER_LIP` had a doc comment explaining why the lip is low and is not cover, `_pad` was described as "one flat surface with a kerb around it", and no line anywhere built one. A value documented in two places and produced nowhere is as invisible to a suite as one produced and consumed by nothing.
 
-  The catwalks get the band on their two LONG sides only. A kerb across the short ends is a third of a metre of step at the junction a player is running through, and a body catching on it would have read as the movement code being wrong.
+  The catwalks get the band on their two LONG sides only. A kerb across the short ends is a third of a metre of step at the junction a player is running through, and a body catching on it would have read as the movement code being wrong. **And the pad's and the ring's kerbs are open where a catwalk arrives, which they were not until 2026-09-23** — the same step, from the other side; see "A survivor could not walk off their own corner" above.
 
 - **Nobody could shoot anybody, and 280 checks said the weapons worked.** Every shot in the showdown left the world origin pointing due north, whatever the player was doing, because `ZeeWeaponRig` resolved its carrier inside `_resolve_presentation()` — behind that function's `role == SERVER` early return. The view model and the world model belong there; the player does not, because it is where the muzzle position and the aim direction come from. Fixed in zee-dot-weapons, where it affected every server using the pack.
 
@@ -205,13 +229,14 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 16 sections, 116 checks
+godot --headless --path . res://examples/headless_run.tscn   # 20 sections, 131 checks
 godot --headless --path . res://examples/dedicated.tscn      # 7 sections, 44 checks
-godot --headless --path . res://examples/headless_net.tscn   # 14 sections, 134 checks
+godot --headless --path . res://examples/headless_net.tscn   # 14 sections, 135 checks
 tools/shot.sh --view=field
 tools/shot.sh --view=lean
 tools/shot.sh --view=copter
 tools/shot.sh --view=showdown
+tools/shot.sh --view=jump --sc-layout-ids=checker   # the jump a layout means, from behind
 ```
 
 All three suites count sections **and** a total, and the total is the one that catches what the section counter cannot: a runtime error inside a section aborts that function and the section counter is already satisfied, because the section announced itself on the way in. Every guard was armed — the total raised by one and the run re-run — and every one fired.

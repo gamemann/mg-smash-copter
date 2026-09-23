@@ -6,7 +6,9 @@
 #   tools/shot.sh --view=lean         # a platform that has been leant on
 #   tools/shot.sh --view=copter       # the chopper, close
 #   tools/shot.sh --view=showdown     # the corners the round is finished in
+#   tools/shot.sh --view=jump         # the first jump the layout means, from behind it
 #   tools/shot.sh --view=field --seconds=20 --out=res://screenshots/late.png
+#   tools/shot.sh --view=field --sc-layout-ids=checker   # any --sc-* is the game's own config
 #
 # xvfb-run because this needs a rendering context and the machines this runs on have no
 # display. `--headless` is NOT a substitute: it gives a null renderer and saves a frame of
@@ -18,12 +20,14 @@ mkdir -p screenshots
 view="eyes"
 seconds="4"
 out=""
+config=()
 
 for arg in "$@"; do
     case "$arg" in
         --view=*)    view="${arg#*=}" ;;
         --seconds=*) seconds="${arg#*=}" ;;
         --out=*)     out="${arg#*=}" ;;
+        --sc-*)      config+=("$arg") ;;
         *)           echo "unknown argument: $arg" >&2; exit 2 ;;
     esac
 done
@@ -31,4 +35,4 @@ done
 [ -n "$out" ] || out="res://screenshots/${view}.png"
 
 exec xvfb-run -a "${GODOT:-godot}" --path . --resolution 1280x720 \
-    res://tools/shot.tscn -- "--seconds=$seconds" "--view=$view" "--out=$out"
+    res://tools/shot.tscn -- "--seconds=$seconds" "--view=$view" "--out=$out" "${config[@]}"

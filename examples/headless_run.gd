@@ -30,7 +30,7 @@ const ScSpecials := preload("../game/sc_specials.gd")
 ## `set_physics_process(false)` goes on first and every section advances the world itself.
 
 ## Sections entered, against sections that ran to their last line.
-const SECTIONS := 16
+const SECTIONS := 20
 
 ## And the total this counter cannot be.
 ##
@@ -38,7 +38,7 @@ const SECTIONS := 16
 ## checks that already ran still print ok, the ones after it never happen, and the section
 ## counter is satisfied because the section announced itself on the way in. dot-settings
 ## reported "8 sections, 63 passed, 0 failed" and exited 0 with eight checks missing.
-const CHECKS := 116
+const CHECKS := 131
 
 const TICK_RATE := 64
 const TICK := 1.0 / float(TICK_RATE)
@@ -78,6 +78,10 @@ func _run() -> void:
 	await _test_specials()
 	await _test_a_shot_lands()
 	await _test_the_chopper()
+	await _test_reach()
+	await _test_the_throat()
+	await _test_the_showdown_walk()
+	await _test_the_zigzag()
 
 	for world in _worlds.duplicate():
 		await _dispose(world)
@@ -260,16 +264,24 @@ func _test_world_builds() -> void:
 	# Counted rather than measured: a pad is four kerbs and a catwalk is two, because a kerb
 	# across a catwalk's short end is a step in the middle of the walkway rather than a rail
 	# beside it.
+	#
+	# Counted by SIDE rather than by piece, because a side a catwalk joins is two pieces
+	# with the catwalk between them. Whether that gap is really there is not something a
+	# count can say — the showdown walk below is what says it.
 	var pads := 0
 	var walks := 0
 	var thin := PackedStringArray()
 
 	for child: Node in game.arena.find_children("*", "StaticBody3D", true, false):
-		var kerbs := 0
+		var sides: Dictionary = {}
 
 		for piece: Node in child.get_children():
-			if String(piece.name).begins_with("KerbHit"):
-				kerbs += 1
+			var piece_name := String(piece.name)
+
+			if piece_name.begins_with("KerbHit"):
+				sides[piece_name.trim_prefix("KerbHit").get_slice("_", 0)] = true
+
+		var kerbs := sides.size()
 
 		if String(child.name).begins_with("Catwalk"):
 			walks += 1
@@ -1030,6 +1042,399 @@ func _test_the_chopper() -> void:
 ## [b]The one thing neither the suite nor the editor can see: what happens once this is a
 ## pack.[/b] Every finding in this section came from a delivered server rather than from
 ## here, and each is a check written afterwards so the next one is caught before the boot.
+func _test_reach() -> void:
+	_section("every jump a layout means is inside a running jump, and no other is")
+
+	var game := await _world(func(c: ScConfig) -> void:
+		c.cannon_enabled = false
+		c.specials_enabled = false
+	)
+	var config := game.config
+	var platforms := game.platforms
+
+	# [b]The arithmetic first, so a wrong answer below is a wrong map and not wrong sums.[/b]
+	# Read off the controller's own tunables: flat, a running jump is the run speed times
+	# the whole airtime; above the apex it is no jump at all.
+	var t := ScPlayer.tunables_for(config, null)
+	var flat := ScPlayer.jump_reach(config, 0.0)
+	var airtime := 2.0 * sqrt(2.0 * t.gravity * t.jump_height) / t.gravity
+	_check(
+		absf(flat - t.max_speed * airtime) < 0.001
+			and ScPlayer.jump_reach(config, 0.5) < flat
+			and is_zero_approx(ScPlayer.jump_reach(config, t.jump_height + 0.01)),
+		"the reach is the movement's own, and shrinks as the landing rises",
+		"%.2f m flat, %.2f m onto 0.5 m" % [flat, ScPlayer.jump_reach(config, 0.5)]
+	)
+
+	var too_far := PackedStringArray()
+	var too_near := PackedStringArray()
+	var unmet := PackedStringArray()
+	var closest := PackedStringArray()
+	var parked := PackedStringArray()
+
+	for layout in ScLayouts.all(config):
+		platforms.build(layout, game.physics)
+		var cells := platforms.cells()
+		var meant := 0
+		var tightest := ""
+		var tightest_margin := INF
+
+		for pair: Vector3i in ScLayouts.pairs(cells):
+			var declared := (layout.jumps & pair.z) != 0
+
+			# Both ways, because the dip is the LAUNCH platform's and two platforms need
+			# not lean alike.
+			for way: Vector2i in [Vector2i(pair.x, pair.y), Vector2i(pair.y, pair.x)]:
+				var air := platforms.clear_air(way.x, way.y)
+				var gap := air.y
+				var label := "%s %s->%s" % [layout.id, _cell_name(platforms, way.x),
+					_cell_name(platforms, way.y)]
+
+				if declared:
+					meant += 1
+					var dip := _run_up_dip(platforms, config, way.x, way.y, air.x)
+					var reach := ScPlayer.jump_reach(config, dip)
+
+					if gap > reach:
+						too_far.append("%s %.2f m of air, %.2f m reach off a %.2f m dip" % [
+							label, gap, reach, dip])
+					elif reach - gap < tightest_margin:
+						tightest_margin = reach - gap
+						tightest = "%s %.2f m of %.2f" % [label, gap, reach]
+				elif gap <= flat:
+					# The most generous jump there is: flat, at a run. Anything inside it is
+					# a crossing the layout never meant and a player will find.
+					too_near.append("%s %.2f m of air, inside %.2f m" % [label, gap, flat])
+
+		if layout.jumps != 0 and meant == 0:
+			unmet.append(String(layout.id))
+
+		if tightest != "":
+			closest.append(tightest)
+
+		if layout.with_chopper:
+			for i in range(config.chopper_count):
+				var pad := game.arena.chopper_pad(i, config.chopper_count)
+
+				if platforms.index_at(pad.x, pad.z) < 0:
+					parked.append("%s chopper %d" % [layout.id, i])
+
+	_check(too_far.is_empty(), "every jump a layout means can be made from a run",
+		"; ".join(too_far) if not too_far.is_empty() else ", ".join(closest))
+	_check(too_near.is_empty(), "and every jump it does not mean cannot",
+		"; ".join(too_near))
+	_check(unmet.is_empty(), "and no layout means a kind of jump it has none of",
+		", ".join(unmet))
+	# The chopper is parked in the air and comes to rest on whatever is under it; over a
+	# gap it comes to rest forty metres down, where nobody can get into it.
+	_check(parked.is_empty(), "every parked chopper settles onto a platform",
+		", ".join(parked))
+
+	await _dispose(game)
+	_finished()
+
+
+func _test_the_throat() -> void:
+	_section("nothing is built over the cannon's mouth, and every shot gets out")
+
+	var game := await _world(func(c: ScConfig) -> void:
+		c.specials_enabled = false
+	)
+	var config := game.config
+	var platforms := game.platforms
+	var muzzle := game.arena.muzzle()
+	var active := ScSpecials.Active.new()
+
+	var crowded := PackedStringArray()
+	var margins := PackedStringArray()
+	var stuck := PackedStringArray()
+	var fired := 0
+
+	for layout in ScLayouts.all(config):
+		platforms.build(layout, game.physics)
+		await _physics_frame()
+		await _physics_frame()
+
+		var clear := platforms.clearance_from(muzzle.x, muzzle.z)
+		margins.append("%s %.1f" % [layout.id, clear])
+
+		if clear < ScArena.THROAT_CLEARANCE:
+			crowded.append("%s %.2f m" % [layout.id, clear])
+
+		# [b]Fired, not only measured[/b], and with every tier unlocked: at the start of a
+		# round the cannon throws crates, and a crate gets through a slot a monolith does
+		# not. Eight shots a layout, each watched for half a second.
+		var blocked := 0
+
+		for _shot in range(8):
+			var prop: DotPropInstance = game.cannon.call("_launch_one", 1000.0, active)
+
+			if prop == null:
+				continue
+
+			fired += 1
+			var top := -INF
+
+			for _t in range(32):
+				game.simulate(TICK)
+				await _physics_frame()
+				var body := prop.body()
+
+				if body == null or not is_instance_valid(body):
+					break
+
+				top = maxf(top, body.global_position.y)
+
+			if top < config.deck_height + 2.0:
+				blocked += 1
+
+			var _gone := game.props.remove(prop.instance_id, DotPropSpawner.REASON_CLEANUP)
+
+		if blocked > 0:
+			stuck.append("%s %d of 8" % [layout.id, blocked])
+
+	_check(crowded.is_empty(), "no layout builds anything over the cannon's mouth",
+		"; ".join(crowded) if not crowded.is_empty() else ", ".join(margins))
+	_check(fired == 8 * ScLayouts.all(config).size() and stuck.is_empty(),
+		"and every shot on every layout climbs past the decks",
+		"%d fired; %s" % [fired, ", ".join(stuck) if not stuck.is_empty() else "none held"])
+
+	await _dispose(game)
+	_finished()
+
+
+## How far below the deck the lip a runner leaves from has gone by the time they reach it.
+##
+## [b]The platform's own model, stepped the way a run steps it.[/b] A lone runner from the
+## middle to the edge at full speed, loading the deck the way [ScGame] loads it, and the
+## surface under the edge read at the moment they arrive. That is the rise the jump has to
+## make up — at the ordinary numbers about 0.3 m mid-edge and 0.7 m at a corner, which on
+## a 1.15 m apex is most of the difference between a jump and a wall.
+func _run_up_dip(
+	platforms: ScPlatforms, config: ScConfig, from: int, to: int, leave: float
+) -> float:
+	var deck := platforms.deck_at(from)
+	var target := platforms.deck_at(to)
+	deck.lean = Vector2.ZERO
+	deck.lean_velocity = Vector2.ZERO
+	deck.sink = 0.0
+	deck.sink_velocity = 0.0
+
+	var heading := Vector3(target.centre.x - deck.centre.x, 0.0, target.centre.z - deck.centre.z)
+	heading = heading.normalized()
+	var at := deck.centre
+	var run := config.run_speed * TICK
+	var travelled := 0.0
+
+	while travelled < leave:
+		travelled = minf(travelled + run, leave)
+		at = deck.centre + heading * travelled
+		platforms.begin_loads()
+		platforms.add_load(from, at, config.player_mass, config.run_speed)
+		platforms.step(TICK)
+
+	var dip := config.deck_height - platforms.surface_y(from, at.x, at.z)
+
+	deck.lean = Vector2.ZERO
+	deck.lean_velocity = Vector2.ZERO
+	deck.sink = 0.0
+	deck.sink_velocity = 0.0
+
+	return maxf(dip, 0.0)
+
+
+func _cell_name(platforms: ScPlatforms, index: int) -> String:
+	var deck := platforms.deck_at(index)
+	return "(%d,%d)" % [deck.column, deck.row]
+
+
+func _test_the_showdown_walk() -> void:
+	_section("a survivor can walk from their corner onto the ring")
+
+	# Two sides, where every catwalk meets its edges square on, and three, where two of
+	# them meet the ring at an angle and a gap cut along the edge has to be wider.
+	for sides: int in [2, 3]:
+		var game := await _world(func(c: ScConfig) -> void:
+			c.team_count = sides
+			c.cannon_enabled = false
+			c.specials_enabled = false
+		)
+
+		var corner := sides - 1
+		var start := game.arena.corner_point(corner, sides)
+		var middle := game.arena.showdown_centre()
+		var ring := game.config.corner_size * 0.85
+		var walker := game.add_player(&"walker", "Walker", 1)
+		var yaw := game.arena.showdown_yaw(corner, sides)
+		walker.place_at(start + Vector3.UP * 0.2, yaw)
+
+		var arrived := false
+		var lowest := INF
+
+		# Running, which is the case the kerb was stopping. Walking is stopped the same way.
+		for _i in range(int(8.0 * TICK_RATE)):
+			var command := DotFpsCommand.new()
+			command.yaw = yaw
+			command.move = Vector2(0.0, 1.0)
+			walker.controller.apply_command(command)
+			game.simulate(TICK)
+			await _physics_frame()
+
+			var at := walker.controller.state.position
+			lowest = minf(lowest, at.y)
+
+			if Vector2(at.x - middle.x, at.z - middle.z).length() < ring - 2.0:
+				arrived = true
+				break
+
+		var ended := walker.controller.state.position
+		_check(arrived and lowest > middle.y - 0.5,
+			"with %d sides, from corner %d onto the ring" % [sides, corner],
+			"%.1f m from the middle, lowest %.2f m against %.2f" % [
+				Vector2(ended.x - middle.x, ended.z - middle.z).length(), lowest, middle.y])
+
+		await _dispose(game)
+
+	_finished()
+
+
+func _test_the_zigzag() -> void:
+	_section("the chequerboard is crossed on the diagonals and only on them")
+
+	var game := await _world(func(c: ScConfig) -> void:
+		c.cannon_enabled = false
+		c.specials_enabled = false
+		c.layout_ids = PackedStringArray(["checker"])
+	)
+	var platforms := game.platforms
+
+	# Through the operator's own knob, so the render and a server running it are the same
+	# field this drives.
+	_check(game.layout != null and game.layout.id == &"checker",
+		"the round is laid out as the chequerboard",
+		String(game.layout.id) if game.layout != null else "none")
+
+	var runner := game.add_player(&"runner", "Runner", 1)
+	game.add_player(&"other", "Other", 2)
+
+	# Along the whole field: (0,0) (1,1) (2,0) (3,1) (4,0). Four jumps, each one a
+	# diagonal, each from the middle of a platform that is leaning under the person on it.
+	var route: Array[int] = []
+
+	for column in range(game.config.columns):
+		route.append(_deck_at_cell(platforms, column, column % 2))
+
+	_check(not route.has(-1), "the zigzag is all there", str(route))
+
+	var start := platforms.deck_at(route[0])
+	runner.place_at(start.centre + Vector3.UP * 0.2, 0.0)
+	await _step(game, 20)
+
+	var made := PackedStringArray()
+
+	for leg in range(route.size() - 1):
+		var from := route[leg]
+		var to := route[leg + 1]
+		await _walk_to(game, runner, platforms.deck_at(from).centre)
+		var landed := await _jump_across(game, runner, from, to)
+		made.append("%s%s" % [_cell_name(platforms, to), "" if landed else " MISSED"])
+
+		if not landed:
+			break
+
+	_check(made.size() == route.size() - 1 and not ", ".join(made).contains("MISSED"),
+		"a runner crosses the field on four diagonals", ", ".join(made))
+	_check(runner.is_alive() and runner.standing_on == route[route.size() - 1],
+		"and is standing on the far corner platform at the end",
+		"on %d, alive %s" % [runner.standing_on, runner.is_alive()])
+	_check(platforms.standing_count() == platforms.count(),
+		"with every platform they crossed still up",
+		"%d of %d" % [platforms.standing_count(), platforms.count()])
+
+	# [b]And the straight line is a fall, which is the other half of "every jump is a
+	# diagonal".[/b] From the far corner back along the row toward (2,0), jumping at the lip.
+	var along := _deck_at_cell(platforms, game.config.columns - 3, 0)
+	await _walk_to(game, runner, platforms.deck_at(route[route.size() - 1]).centre)
+	var crossed := await _jump_across(game, runner, route[route.size() - 1], along)
+	_check(not crossed and runner.controller.state.position.y < game.config.deck_height - 3.0,
+		"and running straight along a row is a fall",
+		"%.1f m" % runner.controller.state.position.y)
+
+	await _dispose(game)
+	_finished()
+
+
+func _deck_at_cell(platforms: ScPlatforms, column: int, row: int) -> int:
+	for i in range(platforms.count()):
+		var deck := platforms.deck_at(i)
+
+		if not deck.is_bridge and deck.column == column and deck.row == row:
+			return i
+
+	return -1
+
+
+## Walks, with the brake held, to a point on whatever the player is standing on, and stops.
+func _walk_to(game: ScGame, player: ScPlayer, target: Vector3) -> void:
+	for _i in range(int(6.0 * TICK_RATE)):
+		var at := player.controller.state.position
+		var toward := Vector3(target.x - at.x, 0.0, target.z - at.z)
+		var command := DotFpsCommand.new()
+		command.yaw = player.controller.state.yaw
+
+		if toward.length() < 0.4:
+			player.controller.apply_command(command)
+			game.simulate(TICK)
+			await _physics_frame()
+			break
+
+		command.yaw = rad_to_deg(atan2(-toward.x, -toward.z))
+		command.move = Vector2(0.0, 1.0)
+		command.set_button(DotFpsCommand.BUTTON_WALK, true)
+		player.controller.apply_command(command)
+		game.simulate(TICK)
+		await _physics_frame()
+
+	# Let them and the platform settle, the way a person would before committing.
+	await _step(game, 40)
+
+
+## Runs at platform [param to] and jumps at the lip of [param from]. True if they land on it.
+func _jump_across(game: ScGame, player: ScPlayer, from: int, to: int) -> bool:
+	var platforms := game.platforms
+	var target := platforms.deck_at(to).centre
+	var jumped := false
+
+	for _i in range(int(4.0 * TICK_RATE)):
+		var at := player.controller.state.position
+		var toward := Vector3(target.x - at.x, 0.0, target.z - at.z)
+		var command := DotFpsCommand.new()
+		command.yaw = rad_to_deg(atan2(-toward.x, -toward.z))
+		command.move = Vector2(0.0, 1.0)
+
+		# Off the last of the lip rather than past it. A capsule is half a metre across and a
+		# deck leaning away under a runner stops holding them up a little before its edge.
+		if not jumped and platforms.index_at(at.x, at.z) == from:
+			var ahead := at + toward.normalized() * 0.6
+
+			if platforms.index_at(ahead.x, ahead.z) != from:
+				command.set_button(DotFpsCommand.BUTTON_JUMP, true)
+				jumped = true
+
+		player.controller.apply_command(command)
+		game.simulate(TICK)
+		await _physics_frame()
+
+		if jumped and player.standing_on == to \
+				and player.controller.state.mode == DotFpsState.Mode.GROUND:
+			return true
+
+		if player.controller.state.position.y < game.config.deck_height - 3.0:
+			return false
+
+	return false
+
+
 func _test_delivery() -> void:
 	_section("a delivered pack's own paths still resolve")
 

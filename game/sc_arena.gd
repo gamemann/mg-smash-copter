@@ -40,6 +40,15 @@ const TUBE_RADIUS := 3.1
 ## went out flat instead of up and the cannon read as broken.
 const MUZZLE_CLEARANCE := 2.6
 
+## How far every platform has to stay from the line the cannon fires up, in metres.
+##
+## [b]The widest thing the tube throws, from its middle to its furthest corner.[/b] A
+## monolith is 3.4 x 1.4 x 3.0 m and leaves the muzzle tumbling, so 2.4 m in any direction
+## is what it sweeps; the muzzle is three metres under the decks, so a platform edge inside
+## that is a platform the shot goes up into rather than over. The suite's throat section
+## measures every layout against this and then fires at each of them.
+const THROAT_CLEARANCE := 2.5
+
 ## How wide a catwalk between a corner pad and the middle of the showdown ring is.
 const CATWALK_WIDTH := 3.4
 
@@ -384,21 +393,41 @@ func _build_showdown() -> void:
 	var middle := showdown_centre()
 	var ring_radius := config.corner_size * 0.85
 
+	# Where each catwalk leaves the ring, so the ring's kerb can stop there. See
+	# [method _build_kerb] for why it has to.
+	var outwards: Array[Vector2] = []
+
+	for index in range(config.team_count):
+		var corner := corner_point(index, config.team_count)
+		var out := Vector2(corner.x - middle.x, corner.z - middle.z)
+
+		if out.length() > 0.001:
+			outwards.append(out.normalized())
+
 	_pad(
 		"Ring",
 		middle,
 		Vector2(ring_radius * 2.0, ring_radius * 2.0),
-		ScTextures.Role.ARENA
+		ScTextures.Role.ARENA,
+		true,
+		outwards
 	)
 
 	for index in range(config.team_count):
 		var centre := corner_point(index, config.team_count)
+		var inward := Vector2(middle.x - centre.x, middle.z - centre.z)
+		var openings: Array[Vector2] = []
+
+		if inward.length() > 0.001:
+			openings.append(inward.normalized())
 
 		_pad(
 			"Pad%d" % index,
 			centre,
 			Vector2(config.corner_size, config.corner_size),
-			ScTextures.Role.SAFE
+			ScTextures.Role.SAFE,
+			true,
+			openings
 		)
 
 		# The catwalk, from the pad's inner edge to the ring's rim. Solved from the two
@@ -426,10 +455,12 @@ func _build_showdown() -> void:
 		walk.rotation = Vector3(0.0, atan2(outward.x, outward.z), 0.0)
 
 
-## One flat surface with a kerb around it.
+## One flat surface with a kerb around it, open wherever a catwalk joins it.
+##
+## [param openings] are the directions, from the pad's middle, that a catwalk leaves in.
 func _pad(
 	node_name: String, at: Vector3, size: Vector2, role: ScTextures.Role,
-	ends: bool = true
+	ends: bool = true, openings: Array[Vector2] = []
 ) -> StaticBody3D:
 	var body := StaticBody3D.new()
 	body.name = node_name
@@ -455,7 +486,7 @@ func _pad(
 	mesh.material_override = ScTextures.surface(role)
 	body.add_child(mesh)
 
-	_build_kerb(body, size, ends)
+	_build_kerb(body, size, ends, openings)
 
 	_classify(body, &"world")
 	_showdown.add_child(body)
@@ -484,7 +515,17 @@ func _pad(
 ## of a metre high, at the exact moment a player is running for cover. It cost nothing to see
 ## in a render and would have been very hard to read as a bug from inside the game: a body
 ## that catches on it reads as the movement code being wrong.
-func _build_kerb(body: StaticBody3D, size: Vector2, ends: bool = true) -> void:
+##
+## [b]And it is open where a catwalk arrives, which it was not until 2026-09-23.[/b] The
+## paragraph above kept the catwalk's own ends clear and the pad's and the ring's kerbs ran
+## straight across the same junctions from the other side — so a survivor walking to the
+## ring was stopped at their own pad's edge, running or walking, and stopped again at the
+## ring's. dot-player-controller's step-up does not take a 0.34 m kerb 0.6 m deep. The
+## suite's "a pad is edged on four sides" counted the kerbs and passed; the reach section
+## now walks a survivor from their corner onto the ring, and that failed first.
+func _build_kerb(
+	body: StaticBody3D, size: Vector2, ends: bool = true, openings: Array[Vector2] = []
+) -> void:
 	var material := ScTextures.surface(ScTextures.Role.CANNON)
 
 	var edges: Array[Vector3] = [
@@ -498,33 +539,99 @@ func _build_kerb(body: StaticBody3D, size: Vector2, ends: bool = true) -> void:
 		if not ends and i < 2:
 			continue
 
+		# `along_x` is true for the two edges that run along Z (the ±X sides), which is the
+		# naming this loop has always used: their kerb is thin in X.
 		var along_x := i >= 2
-		var span := Vector3(
-			PAD_BAND if along_x else size.x,
-			CORNER_LIP,
-			size.y if along_x else PAD_BAND
-		)
+		var half_run := (size.y if along_x else size.x) * 0.5
+		var pieces := _kerb_pieces(edges[i], along_x, half_run, openings)
 
-		var mesh := MeshInstance3D.new()
-		mesh.name = "Kerb%d" % i
-		var box := BoxMesh.new()
-		box.size = span
-		mesh.mesh = box
-		# The pad's own surface is y = 0 on the body and the slab hangs below it, so the
-		# kerb sits on top with its own middle half a lip up. Measuring from the mesh's
-		# centre instead is what made the platforms' first rim invisible.
-		mesh.position = edges[i] + Vector3(0.0, CORNER_LIP * 0.5, 0.0)
-		mesh.material_override = material
-		body.add_child(mesh)
+		for p in range(pieces.size()):
+			var piece := pieces[p]
+			var run := piece.y - piece.x
+			var middle := (piece.x + piece.y) * 0.5
+			var span := Vector3(
+				PAD_BAND if along_x else run,
+				CORNER_LIP,
+				run if along_x else PAD_BAND
+			)
+			var place := edges[i] + (Vector3(0.0, 0.0, middle) if along_x else Vector3(middle, 0.0, 0.0))
 
-		var shape := BoxShape3D.new()
-		shape.size = span
+			var mesh := MeshInstance3D.new()
+			mesh.name = "Kerb%d_%d" % [i, p]
+			var box := BoxMesh.new()
+			box.size = span
+			mesh.mesh = box
+			# The pad's own surface is y = 0 on the body and the slab hangs below it, so the
+			# kerb sits on top with its own middle half a lip up. Measuring from the mesh's
+			# centre instead is what made the platforms' first rim invisible.
+			mesh.position = place + Vector3(0.0, CORNER_LIP * 0.5, 0.0)
+			mesh.material_override = material
+			body.add_child(mesh)
 
-		var collider := CollisionShape3D.new()
-		collider.name = "KerbHit%d" % i
-		collider.shape = shape
-		collider.position = mesh.position
-		body.add_child(collider)
+			var shape := BoxShape3D.new()
+			shape.size = span
+
+			var collider := CollisionShape3D.new()
+			collider.name = "KerbHit%d_%d" % [i, p]
+			collider.shape = shape
+			collider.position = mesh.position
+			body.add_child(collider)
+
+
+## What is left of one edge's kerb once every catwalk crossing it is cut out, as (from, to)
+## along the edge.
+##
+## [b]Cut where the catwalk's STRIP crosses the edge, not where its middle does.[/b] With
+## two or four sides every catwalk meets its edge square on; with three, five or six it
+## meets the square ring at an angle, and a gap one catwalk wide measured along the edge is
+## narrower than the walkway coming through it.
+static func _kerb_pieces(
+	edge: Vector3, along_x: bool, half_run: float, openings: Array[Vector2]
+) -> Array[Vector2]:
+	var cuts: Array[Vector2] = []
+	var half_width := CATWALK_WIDTH * 0.5
+
+	for d in openings:
+		# A point on this edge is `fixed` on one axis and `s` along the other. It is inside
+		# the catwalk's strip when its distance from the line through the middle along `d`
+		# is at most half a width — |d_fixed * s - d_run * fixed| — and on the catwalk's
+		# side when it is ahead along `d`.
+		var fixed := edge.x if along_x else edge.z
+		var d_fixed := d.x if along_x else d.y
+		var d_run := d.y if along_x else d.x
+
+		if absf(d_fixed) < 0.0001:
+			# The catwalk runs parallel to this edge, so none of it crosses it.
+			continue
+
+		var a := (d_run * fixed - half_width) / d_fixed
+		var b := (d_run * fixed + half_width) / d_fixed
+		var lo := minf(a, b)
+		var hi := maxf(a, b)
+		var ahead := d_fixed * fixed + d_run * (lo + hi) * 0.5
+
+		if ahead > 0.0:
+			cuts.append(Vector2(lo, hi))
+
+	var pieces: Array[Vector2] = [Vector2(-half_run, half_run)]
+
+	for cut in cuts:
+		var next: Array[Vector2] = []
+
+		for piece in pieces:
+			if cut.y <= piece.x or cut.x >= piece.y:
+				next.append(piece)
+				continue
+
+			if cut.x - piece.x > 0.05:
+				next.append(Vector2(piece.x, cut.x))
+
+			if piece.y - cut.y > 0.05:
+				next.append(Vector2(cut.y, piece.y))
+
+		pieces = next
+
+	return pieces
 
 
 # --- Where a chopper waits --------------------------------------------------

@@ -39,7 +39,7 @@ const ScSpecials := preload("../game/sc_specials.gd")
 ## and LAYOUT correct it.
 
 const SECTIONS := 14
-const CHECKS := 134
+const CHECKS := 135
 
 ## Who the client is, on both ends.
 const CLIENT_PEER := 7
@@ -161,13 +161,18 @@ func _test_the_wire() -> void:
 		Vector3i(0, 0, 0), Vector3i(1, 0, 0), Vector3i(1, 1, 0), Vector3i(1, 0, 1),
 	]
 	var layout := ScEvents.read_layout(_reader(ScEvents.write_layout(
-		&"gauntlet", 5, 2, 11.4, 24.0, 10.5, 40.0, 0.82, 0.66, cells
+		&"gauntlet", 5, 2, 11.4, 24.0, 10.5, 40.0, 0.82, 0.66, cells, 0.525, -0.5
 	)))
 	_check(bool(layout["ok"]), "a layout decodes")
 	_check(StringName(layout["layout_id"]) == &"gauntlet", "with its id")
 	_check(int(layout["columns"]) == 5 and int(layout["rows"]) == 2, "its shape")
 	_check(absf(float(layout["deck_height"]) - 40.0) < 0.05, "how high the field is")
 	_check(absf(float(layout["pitch_scale"]) - 0.82) < 0.01, "and the scales it is played at")
+	# The row scale, which the chequerboard pulls in to 0.525. A client that dropped it would
+	# build that field's second row 11.4 m from where the server's is.
+	_check(absf(float(layout.get("row_pitch_scale", 1.0)) - 0.525) < 0.001
+			and absf(float(layout.get("row_shift", 0.0)) + 0.5) < 0.001,
+		"and how close its rows are, and where")
 
 	var came_back: Array[Vector3i] = layout["cells"]
 	_check(came_back.size() == cells.size(), "every cell comes back", "%d" % came_back.size())

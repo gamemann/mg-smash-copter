@@ -206,6 +206,12 @@ var _physics: DotPhysicsLayout = null
 ## What the configured column spacing was multiplied by for this field.
 var _pitch_scale: float = 1.0
 
+## What the configured row spacing is multiplied by. See [member ScLayouts.Layout.row_pitch_scale].
+var _row_pitch_scale: float = 1.0
+
+## How far the field is moved along the rows, in row pitches. See [member ScLayouts.Layout.row_shift].
+var _row_shift: float = 0.0
+
 
 func _ready() -> void:
 	if config == null:
@@ -214,7 +220,10 @@ func _ready() -> void:
 
 ## Lays out the field a layout describes. What the authority calls.
 func build(layout: ScLayouts.Layout, physics: DotPhysicsLayout = null) -> void:
-	build_cells(layout.cells(config), layout.pitch_scale, layout.stiffness_scale, physics)
+	build_cells(
+		layout.cells(config), layout.pitch_scale, layout.stiffness_scale, physics,
+		layout.row_pitch_scale, layout.row_shift
+	)
 
 	DotLog.info(CHANNEL, "the platforms are up", {
 		"layout": String(layout.id),
@@ -240,12 +249,16 @@ func build_cells(
 	cells: Array[Vector3i],
 	p_pitch_scale: float,
 	p_stiffness_scale: float,
-	physics: DotPhysicsLayout = null
+	physics: DotPhysicsLayout = null,
+	p_row_pitch_scale: float = 1.0,
+	p_row_shift: float = 0.0
 ) -> void:
 	clear()
 
 	_physics = physics
 	_pitch_scale = maxf(p_pitch_scale, 0.05)
+	_row_pitch_scale = maxf(p_row_pitch_scale, 0.05)
+	_row_shift = p_row_shift
 	stiffness_scale = p_stiffness_scale
 	grip = config.platform_grip
 
@@ -313,12 +326,15 @@ func _build_deck(column: int, row: int, is_bridge: bool) -> void:
 
 	var pitch := config.column_pitch * _pitch_scale
 	var span := float(config.columns - 1) * pitch
-	var row_span := float(config.rows - 1) * config.row_pitch
+	var row_pitch := config.row_pitch * _row_pitch_scale
+	var row_span := float(config.rows - 1) * row_pitch
+	# Where row zero is: centred on the tube, then moved by the layout's shift.
+	var row_origin := -row_span * 0.5 + _row_shift * row_pitch
 
 	deck.centre = Vector3(
 		float(column) * pitch - span * 0.5,
 		config.deck_height,
-		float(row) * config.row_pitch - row_span * 0.5
+		float(row) * row_pitch + row_origin
 	)
 
 	var size := Vector3(
@@ -329,9 +345,11 @@ func _build_deck(column: int, row: int, is_bridge: bool) -> void:
 		# A bridge sits between two rows and spans the gap. Narrow across and long along,
 		# so it is a walkway rather than a second platform: a place you cross, not a place
 		# you hold. It is centred between the rows, which is why its `row` is a half step.
-		deck.centre.z = float(row) * config.row_pitch + config.row_pitch * 0.5 - row_span * 0.5
+		deck.centre.z = float(row) * row_pitch + row_pitch * 0.5 + row_origin
 		size.x = config.platform_size * 0.55
-		size.z = config.row_pitch - config.platform_size - 0.6
+		# Never shorter than a pace. A layout that pulls the rows in to a jump apart has no
+		# use for a bridge and should declare none, but a box with no length is not one.
+		size.z = maxf(row_pitch - config.platform_size - 0.6, 0.5)
 
 	deck.half = maxf(size.x, size.z) * 0.5
 	deck.health = 1.0
@@ -521,6 +539,58 @@ func _footprint(deck: Deck) -> Vector2:
 
 	var box := collider.shape as BoxShape3D
 	return Vector2(box.size.x, box.size.z) * 0.5 if box != null else Vector2(deck.half, deck.half)
+
+
+## The air between two platforms along the line from one's middle to the other's, in metres.
+##
+## Returns (where that line leaves [param from], the air, where it lands on [param to]),
+## each measured from [param from]'s middle. [b]Along the line a runner takes, and not the
+## shortest distance between the two footprints[/b]: two chequerboard squares are 2.1 m
+## apart corner to corner and 2.8 m apart along the diagonal a player actually runs, and a
+## jump sized by the first is one that lands on the second's edge.
+func clear_air(from: int, to: int) -> Vector3:
+	var a := deck_at(from)
+	var b := deck_at(to)
+
+	if a == null or b == null:
+		return Vector3.ZERO
+
+	var line := Vector2(b.centre.x - a.centre.x, b.centre.z - a.centre.z)
+	var length := line.length()
+
+	if length < 0.001:
+		return Vector3.ZERO
+
+	var leave := _leaves_at(_footprint(a), line / length)
+	var land := length - _leaves_at(_footprint(b), -line / length)
+
+	return Vector3(leave, maxf(land - leave, 0.0), land)
+
+
+## How close any platform still up comes to a vertical line through (x, z), in metres.
+##
+## What the cannon's throat is measured with: a platform whose footprint is over the tube's
+## mouth is a platform every shot goes up into.
+func clearance_from(x: float, z: float) -> float:
+	var nearest := INF
+
+	for deck in decks:
+		if not deck.is_live():
+			continue
+
+		var half := _footprint(deck)
+		var dx := maxf(absf(x - deck.centre.x) - half.x, 0.0)
+		var dz := maxf(absf(z - deck.centre.z) - half.y, 0.0)
+		nearest = minf(nearest, Vector2(dx, dz).length())
+
+	return nearest
+
+
+## How far along [param direction] from a box's middle its edge is.
+static func _leaves_at(half: Vector2, direction: Vector2) -> float:
+	var along_x := half.x / absf(direction.x) if absf(direction.x) > 0.0001 else INF
+	var along_z := half.y / absf(direction.y) if absf(direction.y) > 0.0001 else INF
+	return minf(along_x, along_z)
 
 
 ## Where the surface of platform [param index] is at a world XZ, in metres.
@@ -900,6 +970,8 @@ func describe() -> Dictionary:
 		"worst_lean": "%.1f deg" % rad_to_deg(worst),
 		"grip": "%.2f" % grip,
 		"pitch": "%.2f" % _pitch_scale,
+		"row_pitch": "%.2f" % _row_pitch_scale,
+		"row_shift": "%.2f" % _row_shift,
 		"stiffness": "%.2f" % (config.platform_stiffness * stiffness_scale),
 	}
 

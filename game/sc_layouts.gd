@@ -45,6 +45,27 @@ enum Bridges {
 	ALTERNATE,
 }
 
+## Which jumps between platforms a layout MEANS a player to make, as flags.
+##
+## [b]A declaration, and the suite holds the geometry to it in both directions.[/b] A kind
+## a layout names has to be inside the jump a running player actually makes — measured
+## with the dip their own run puts in the lip they leave from — and a kind it does not name
+## has to be OUTSIDE it, because "nobody is crossing" is as much a promise as "every jump is
+## a diagonal". Every pair is read off the built field rather than written down, so moving a
+## platform moves the jump with it. See [method pairs] and `headless_run`'s reach section.
+##
+## A pair joined by a bridge is walked, not jumped, and is none of these.
+enum Jumps {
+	## To the next platform along the same row.
+	ALONG_ROWS = 1,
+	## To the nearest platform along the same row across one or more missing ones.
+	ACROSS_HOLES = 2,
+	## Straight across to the other row, where no bridge joins the two.
+	ACROSS_ROWS = 4,
+	## To a platform one column over in the next row.
+	DIAGONALS = 8,
+}
+
 ## One arrangement of the field.
 class Layout extends RefCounted:
 	var id: StringName = &""
@@ -64,6 +85,25 @@ class Layout extends RefCounted:
 	## Above one is a map of islands with jumps that have to be meant; below one is a map
 	## where a collapsing platform takes its neighbour's footing with it.
 	var pitch_scale: float = 1.0
+
+	## What the configured ROW spacing is multiplied by.
+	##
+	## [b]The rows are a bridge apart on every layout but one.[/b] At the configured 24 m
+	## there is 13.5 m of air between the rows, which is the point of a bridge; a layout
+	## that wants the rows to be a JUMP apart pulls them in with this, and says so in
+	## [member jumps].
+	var row_pitch_scale: float = 1.0
+
+	## How far the whole field is moved along the rows, as a fraction of the row pitch.
+	##
+	## [b]For the one layout whose rows are a jump apart.[/b] Centred, the gap between two
+	## rows is where the cannon's tube stands, and a gap a player can jump is a gap a
+	## monolith cannot get up through — so the chequerboard moves its field half a row over
+	## and puts the tube in the hole where its missing middle platform would be.
+	var row_shift: float = 0.0
+
+	## Which jumps this layout means a player to make. A mask of [enum Jumps].
+	var jumps: int = 0
 
 	## What the configured platform stiffness is multiplied by.
 	##
@@ -120,6 +160,17 @@ class Layout extends RefCounted:
 		if not _has_platform(column, row, config) or not _has_platform(column, row + 1, config):
 			return false
 
+		# [b]Never over the cannon's mouth, and The Spine put one there from the day it was
+		# written.[/b] The tube stands in the middle of the field with its muzzle three
+		# metres under the decks, and on a field with an odd number of columns and an even
+		# number of rows the middle column's middle bridge is exactly on top of it. Every
+		# shot on that layout went up into its underside — forty in forty, measured — and
+		# the cannon on one round in nine did nothing but shake a bridge. The suite's throat
+		# section is what holds this now, for every layout rather than this one.
+		if row_shift == 0.0 and config.columns % 2 == 1 and column == config.columns / 2 \
+				and config.rows % 2 == 0 and row == config.rows / 2 - 1:
+			return false
+
 		match bridges:
 			Bridges.ALL:
 				return true
@@ -137,6 +188,9 @@ class Layout extends RefCounted:
 			"bridges": Bridges.keys()[bridges],
 			"chopper": with_chopper,
 			"pitch": "%.2f" % pitch_scale,
+			"row_pitch": "%.2f" % row_pitch_scale,
+			"row_shift": "%.2f" % row_shift,
+			"jumps": jumps,
 			"stiffness": "%.2f" % stiffness_scale,
 		}
 
@@ -163,18 +217,33 @@ static func _make(
 static func all(config: ScConfig) -> Array[Layout]:
 	var out: Array[Layout] = []
 
-	out.append(_make(
+	var full := _make(
 		&"full", "Full Deck", 20.0, Gaps.NONE, Bridges.OUTER,
 		"Every platform is up. Nowhere is safe and everywhere is reachable."
-	))
+	)
+	full.jumps = Jumps.ALONG_ROWS
+	out.append(full)
 
 	var checker := _make(
 		&"checker", "Chequerboard", 13.0, Gaps.CHECKER, Bridges.ALL,
 		"Half the platforms. Every jump is a diagonal."
 	)
-	# Widened, because a chequerboard at the ordinary spacing leaves diagonals a player
-	# cannot clear and the round becomes a standing contest.
-	checker.pitch_scale = 0.88
+	# [b]The rows pulled in to a jump apart, and until 2026-09-23 there was no jump on it at
+	# all.[/b] The diagonals of a chequerboard run from one ROW to the other, and the rows
+	# were 13.5 m of air apart on every layout — so this was five islands under a blurb
+	# promising diagonals, and the 0.88 column scale that sat here under a comment saying it
+	# "widened" the diagonals narrowed a spacing no diagonal crosses. At 0.525 of the row
+	# pitch a diagonal is 2.8 m of air along the line a runner takes, inside the 3.2 m a
+	# runner reaches from the lip their own run has dipped, and the next platform along a
+	# row is 12.3 m away, which nothing reaches. So the only way anywhere is a diagonal,
+	# which is what the blurb always said. Columns at the ordinary spacing, because a corner
+	# is where the jump leaves from and 0.9 m between corners is the part that reads.
+	checker.row_pitch_scale = 0.525
+	# And half a row over, so the tube stands in the hole where (2,1) would be rather than
+	# in a 2.1 m slot one metre from (2,0)'s edge, where one shot in twenty went up into
+	# its underside. See [member Layout.row_shift].
+	checker.row_shift = -0.5
+	checker.jumps = Jumps.DIAGONALS
 	out.append(checker)
 
 	var islands := _make(
@@ -182,6 +251,8 @@ static func all(config: ScConfig) -> Array[Layout]:
 		"Two islands and a lot of air between them. Nobody is crossing."
 	)
 	islands.pitch_scale = 1.15
+	# Within an island, and only within one: the hole between them is the blurb.
+	islands.jumps = Jumps.ALONG_ROWS
 	out.append(islands)
 
 	var spine := _make(
@@ -191,6 +262,7 @@ static func all(config: ScConfig) -> Array[Layout]:
 	# Steadier, because a map whose safe ground is a bridge wants the platforms either
 	# side of it to be the dangerous half rather than both halves at once.
 	spine.stiffness_scale = 1.15
+	spine.jumps = Jumps.ALONG_ROWS
 	out.append(spine)
 
 	var airfield := _make(
@@ -198,6 +270,7 @@ static func all(config: ScConfig) -> Array[Layout]:
 		"There is a chopper on the pad. Somebody is going to take it."
 	)
 	airfield.with_chopper = config.chopper_enabled
+	airfield.jumps = Jumps.ALONG_ROWS
 	out.append(airfield)
 
 	var gauntlet := _make(
@@ -208,6 +281,8 @@ static func all(config: ScConfig) -> Array[Layout]:
 	# The wobbly one. Two thirds of the usual spring is a platform that leans under one
 	# person walking, which on a layout with no bridges is the whole round.
 	gauntlet.stiffness_scale = 0.66
+	# None. "Every platform stands alone" is a claim about reach, and the suite holds it.
+	gauntlet.jumps = 0
 	out.append(gauntlet)
 
 	var broadside := _make(
@@ -216,6 +291,8 @@ static func all(config: ScConfig) -> Array[Layout]:
 	)
 	broadside.pitch_scale = 1.22
 	broadside.with_chopper = config.chopper_enabled
+	# 3.4 m of air, which is what "pushed apart" means and is inside a running jump.
+	broadside.jumps = Jumps.ALONG_ROWS
 	out.append(broadside)
 
 	var hollow := _make(
@@ -223,7 +300,55 @@ static func all(config: ScConfig) -> Array[Layout]:
 		"Nothing in the middle. The cannon has to reach for you and it will."
 	)
 	hollow.stiffness_scale = 0.88
+	# None: what is left is the two outer columns, joined by their bridges and nothing else.
+	hollow.jumps = 0
 	out.append(hollow)
+
+	return out
+
+
+## Every pair of platforms a player could try to jump between, as (a, b, kind).
+##
+## [param a] and [param b] are indices into [param cells], which is the field's own order,
+## and [param kind] is one [enum Jumps] value. [b]Derived, never declared[/b]: a layout names
+## the KINDS it means, and this is what turns the kinds into pairs off the same cell list the
+## field is built from.
+static func pairs(cells: Array[Vector3i]) -> Array[Vector3i]:
+	var out: Array[Vector3i] = []
+	var at: Dictionary = {}
+	var bridged: Dictionary = {}
+
+	for i in range(cells.size()):
+		var cell := cells[i]
+
+		if cell.z == 1:
+			bridged[Vector2i(cell.x, cell.y)] = true
+		else:
+			at[Vector2i(cell.x, cell.y)] = i
+
+	for key: Vector2i in at:
+		var i: int = at[key]
+
+		# Along the row: the nearest platform to the right, however far.
+		for column in range(key.x + 1, 64):
+			var other := Vector2i(column, key.y)
+
+			if at.has(other):
+				var kind := Jumps.ALONG_ROWS if column == key.x + 1 else Jumps.ACROSS_HOLES
+				out.append(Vector3i(i, at[other], kind))
+				break
+
+		# Straight across to the next row, unless a bridge already joins them.
+		var across := Vector2i(key.x, key.y + 1)
+
+		if at.has(across) and not bridged.has(key):
+			out.append(Vector3i(i, at[across], Jumps.ACROSS_ROWS))
+
+		for side in [-1, 1]:
+			var diagonal := Vector2i(key.x + side, key.y + 1)
+
+			if at.has(diagonal):
+				out.append(Vector3i(i, at[diagonal], Jumps.DIAGONALS))
 
 	return out
 
@@ -233,7 +358,7 @@ static func all(config: ScConfig) -> Array[Layout]:
 ## [b]Weighted rather than uniform, because the full field is the one a player should see
 ## most.[/b] A round that is a variant every time has no baseline to be a variant of.
 static func pick(config: ScConfig, stream: DotRandomStream) -> Layout:
-	var layouts := all(config)
+	var layouts := allowed(config)
 
 	if not config.vary_layout or layouts.is_empty():
 		return layouts[0] if not layouts.is_empty() else _make(
@@ -247,6 +372,33 @@ static func pick(config: ScConfig, stream: DotRandomStream) -> Layout:
 
 	var index := stream.next_weighted(weights)
 	return layouts[clampi(index, 0, layouts.size() - 1)]
+
+
+## The layouts this server may draw: [method all], narrowed by [member ScConfig.layout_ids].
+##
+## An id that names nothing is dropped with a warning rather than refused, and a list that
+## names nothing at all falls back to the whole catalogue — a server with no field is not a
+## server, and the operator who typed the list is better served by a log line than by one.
+static func allowed(config: ScConfig) -> Array[Layout]:
+	var every := all(config)
+
+	if config.layout_ids.is_empty():
+		return every
+
+	var out: Array[Layout] = []
+
+	for layout in every:
+		if config.layout_ids.has(String(layout.id)):
+			out.append(layout)
+
+	if out.is_empty():
+		DotLog.warn(CHANNEL, "layout_ids names nothing this game has", {
+			"asked_for": ", ".join(config.layout_ids),
+			"have": ", ".join(ids(config)),
+		})
+		return every
+
+	return out
 
 
 ## One layout by id, or null. What a console command and the suite use.

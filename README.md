@@ -21,10 +21,11 @@ It is a first- and third-person multiplayer minigame built on the `dot-*` addon 
 
 ```bash
 godot --path .                                                # play it, alone, against stand-ins
-godot --headless --path . res://examples/headless_run.tscn    # the simulation, 116 checks
+godot --headless --path . res://examples/headless_run.tscn    # the simulation, 131 checks
 godot --headless --path . res://examples/dedicated.tscn       # as a real server, 44 checks
-godot --headless --path . res://examples/headless_net.tscn     # over the wire, 134 checks
+godot --headless --path . res://examples/headless_net.tscn     # over the wire, 135 checks
 tools/shot.sh --view=field                                    # render a frame and look at it
+tools/shot.sh --view=jump --sc-layout-ids=checker             # the jump a layout means
 ```
 
 The same client plays alone and plays online: with no server link in the registry it runs the world itself, and with one it predicts its own movement and draws everything else from what the server sends. There is no separate single-player build to keep in step.
@@ -75,7 +76,7 @@ The field is re-rolled at the start of every round: eight arrangements of the sa
 
 `full` · `checker` · `islands` · `spine` · `airfield` · `gauntlet` · `broadside` · `hollow`
 
-A layout is six numbers and a list of cells, so the whole map travels to a client in about thirty bytes and both ends build the identical field in the identical order.
+A layout is a handful of numbers and a list of cells, so the whole map travels to a client in about thirty bytes and both ends build the identical field in the identical order. Each one also says which jumps it means — along the rows, or only the diagonals on the chequerboard, or none at all on the gauntlet — and the suite holds every gap on every layout to what a running player can actually clear. `SC_LAYOUT_IDS=checker` (or `--sc-layout-ids=checker`) runs one layout all evening.
 
 ## The chopper
 
