@@ -22,7 +22,7 @@ It is a first- and third-person multiplayer minigame built on the `dot-*` addon 
 ```bash
 godot --path .                                                # play it, alone, against stand-ins
 godot --headless --path . res://examples/headless_run.tscn    # the simulation, 131 checks
-godot --headless --path . res://examples/dedicated.tscn       # as a real server, 46 checks
+godot --headless --path . res://examples/dedicated.tscn       # as a real server, 54 checks
 godot --headless --path . res://examples/headless_net.tscn     # over the wire, 135 checks
 tools/shot.sh --view=field                                    # render a frame and look at it
 tools/shot.sh --view=jump --sc-layout-ids=checker             # the jump a layout means

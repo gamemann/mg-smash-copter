@@ -12,6 +12,15 @@ Nothing can hurt anybody for the first two thirds of a round. There is no weapon
 
 Neither half would be much on its own. What makes the second one work is that the people in it earned their place by not falling over.
 
+
+## The moderator's live tools, and what a floor game refuses
+
+`ScServices` answers dot-game's `_mod_abilities` with noclip, freeze, speed and gravity (predicted modifiers, so a player an admin moves does not rubber-band), god, buddha, hp, slay and slap as ordinary damage, rename, and teleports that go through `ScPlayer.place_at` — the one way to move a player here that also moves the tick the client draws from. `@team:<n>` is the side.
+
+Refused, with the reason `modtools` prints: **respawn**, because falling is how a round is lost and putting a faller back decides it; **give and strip**, because weapons are handed out at the handover, one each at random, and that draw is the second half's fairness. Anything that moves a body is refused while they fly the chopper. A round start is everybody's new body, so it ends a noclip or a freeze and keeps god.
+
+`dedicated`'s `SECTIONS` was declared as 6 and read by nothing while eight sections ran — the "name that occurs once" detector, on the suite itself. It is compared now, and is 9 with the live-tools section.
+
 ## Layout
 
 ```
@@ -238,7 +247,7 @@ find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read
     godot --headless --path . --check-only --script "res://${f#./}"
 done
 godot --headless --path . res://examples/headless_run.tscn   # 20 sections, 131 checks
-godot --headless --path . res://examples/dedicated.tscn      # 8 sections, 46 checks
+godot --headless --path . res://examples/dedicated.tscn      # 9 sections, 54 checks
 godot --headless --path . res://examples/headless_net.tscn   # 14 sections, 135 checks
 tools/shot.sh --view=field
 tools/shot.sh --view=lean

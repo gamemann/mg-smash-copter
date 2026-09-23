@@ -20,8 +20,8 @@ const ScPlayer := preload("../game/sc_player.gd")
 ## still a dedicated server as far as its console, its cvars and its modules are concerned,
 ## and those are what this is about.
 
-const SECTIONS := 6
-const CHECKS := 46
+const SECTIONS := 9
+const CHECKS := 54
 
 ## The port this test listens on. Nothing else on a developer's machine is likely to be
 ## holding it, and a boot that failed on a busy 27015 would look like the module being
@@ -61,6 +61,7 @@ func _run() -> void:
 		_test_the_tunables()
 		await _test_a_round_runs()
 		await _test_the_stand_ins()
+		await _test_the_live_tools()
 		await _test_it_unloads_cleanly()
 		_test_no_message_preloads_itself()
 
@@ -73,8 +74,13 @@ func _run() -> void:
 
 	var code := 1 if _failed > 0 else 0
 
-	if _sections_entered != _sections_finished:
-		print("ERROR: %d of %d sections finished." % [_sections_finished, _sections_entered])
+	# Against the declared number too. SECTIONS was declared and read by nothing — it said
+	# 6 while eight sections ran — which is the detector for "a name that occurs once"
+	# finding its own suite.
+	if _sections_entered != _sections_finished or _sections_entered != SECTIONS:
+		print("ERROR: %d of %d sections finished, %d declared." % [
+			_sections_finished, _sections_entered, SECTIONS
+		])
 		code = 1
 
 	if _passed + _failed != CHECKS:
@@ -464,6 +470,84 @@ func _test_the_stand_ins() -> void:
 
 	_run_command("sc_bots 1")
 
+	_finished()
+
+
+## dot-moderation's live tools, built by dot-game's services layer by path with this
+## game's verbs in them, driven through the console against a player who joined the way a
+## client does. The body is looked at the moment each command returns: a round can start
+## or end under this section, and a new round is a new body here.
+func _test_the_live_tools() -> void:
+	_section("the moderator's live tools")
+
+	var module := _module()
+	var services: Object = module.get("services") if module != null else null
+	var tools: Object = services.get("mod_tools") if services != null else null
+
+	_check(tools != null, "dot-game built dot-moderation's live tools, by path")
+	_check(
+		server.console.find_command("noclip") != null and server.console.find_command("slay") != null,
+		"and put their commands on the console"
+	)
+
+	if tools == null:
+		for what in ["joins", "noclip", "freeze", "slay", "respawn refused", "give refused"]:
+			_check(false, what)
+		_finished()
+		return
+
+	var net: DotNetManager = module.get("net")
+	var previous_send := net.send_fn
+	# An adopted session has no peer; the netcode's sends to it would be an engine RPC error
+	# per tick.
+	net.send_fn = func(_peer: int, _payload: PackedByteArray, _delivery: int) -> void:
+		pass
+
+	var session := DotClientSession.new()
+	session.peer_id = 6161
+	session.userid = 616
+	session.display_name = "Pilot"
+	var _adopted := server.adopt_session(session)
+	server.events.fire("client_spawn", {"userid": 616, "name": "Pilot"})
+
+	var player: ScPlayer = game.players.get(&"u616")
+	_check(player != null, "a player joins through the roster")
+
+	if player == null:
+		for what in ["noclip", "freeze", "slay", "respawn refused", "give refused"]:
+			_check(false, what)
+		net.send_fn = previous_send
+		_finished()
+		return
+
+	_run_command("noclip Pilot")
+	_check(DotFpsAdminModifiers.is_noclipped(player.controller), "`noclip Pilot` puts them in noclip")
+	_run_command("noclip Pilot off")
+
+	_run_command("freeze Pilot")
+	_check(DotFpsAdminModifiers.is_frozen(player.controller), "`freeze Pilot` holds them on their slab")
+	_run_command("unfreeze Pilot")
+
+	var slain := _run_command("slay Pilot")
+	_check(not player.is_alive(), "`slay Pilot` puts them out, as ordinary damage", " | ".join(slain))
+
+	for _i in range(2):
+		await get_tree().process_frame
+
+	var respawned := _run_command("respawn Pilot")
+	for _i in range(2):
+		await get_tree().process_frame
+	_check(_said(respawned, "faller") or _said(PackedStringArray(respawned), "decides"),
+		"`respawn` is refused with this game's reason", " | ".join(respawned))
+
+	var given := _run_command("give Pilot rifle")
+	for _i in range(2):
+		await get_tree().process_frame
+	_check(_said(given, "handover"), "`give` says why weapons are not given here", " | ".join(given))
+
+	module.get("roster").call("remove", session)
+	var _released := server.release_session(session.peer_id)
+	net.send_fn = previous_send
 	_finished()
 
 

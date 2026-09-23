@@ -134,6 +134,9 @@ func _ready() -> void:
 	# net bridge need, so nothing has to be rearranged when one arrives.
 	controller.drive = DotFpsController.Drive.EXTERNAL
 	controller.tunables = tunables_for(config, active)
+	# Every player, both ends: an admin's noclip or freeze is a modifier whose index
+	# travels on the wire. See dot-player-controller's DotFpsAdminModifiers.
+	controller.admin_abilities = true
 	add_child(controller)
 
 	controller.simulated.connect(_on_simulated)
