@@ -43,7 +43,7 @@ assets/kenney/      eight CC0 models and two atlases
 assets/{blaster-kit,melee,arms}/  the weapon pack's own art, vendored
 textures/prototype/ six CC0 prototype textures, one per role
 scenes/             sc_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (131), dedicated (44), headless_net (135)
+examples/           headless_run (131), dedicated (46), headless_net (135)
 tools/              shot.gd/.tscn/.sh — render a frame and look at it; any --sc-* is config
 ```
 
@@ -222,6 +222,14 @@ Six prototype textures by role, eight models from two kits, and the weapon pack'
 
 **The models are loaded by PATH rather than instanced as an `ext_resource`**, which is a delivery decision. A `.tscn` records an external resource as an absolute path plus a UID and inside a mounted pack neither resolves; mg-buses-from-hell shipped a round where every crate's mesh loaded and every crate's texture did not, which is a game that plays perfectly and appears to have shipped without art. `ScPropBody` loads through `rebase()` and puts the atlas on by hand where one is missing — which in a build does exactly nothing.
 
+## No message preloads itself
+
+`sc_event.gd` and `sc_request.gd` each began by preloading themselves, for a typed `of()` factory. mg-buses-from-hell measured that line (8ed866c) as enough to leak the whole script graph at exit on Godot 4.7.2: a script that `extends DotNetMessage` and preloads ITSELF, first loaded by a module inside a running `DotServer` — which is how every deployed server loads a game. Both are built with `new(kind, body)` now, an `_init` whose arguments default because dot-net's registry decodes with a bare `new()`.
+
+`dedicated`'s last section, **exiting clean**, reads every `DotNetMessage` script under `game/` as text and fails on a self-preload. It is on the source deliberately: the leak is printed by the engine after `quit()`, where no assertion can reach.
+
+**Here it was the whole leak.** `dedicated` exited with 180 ObjectDB instances, 116 resources, two VariantPools pages and thirteen dummy material, shader and texture RIDs still alive; with the two lines gone it exits with no warning at all (2026-09-23).
+
 ## Validating
 
 ```bash
@@ -230,7 +238,7 @@ find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read
     godot --headless --path . --check-only --script "res://${f#./}"
 done
 godot --headless --path . res://examples/headless_run.tscn   # 20 sections, 131 checks
-godot --headless --path . res://examples/dedicated.tscn      # 7 sections, 44 checks
+godot --headless --path . res://examples/dedicated.tscn      # 8 sections, 46 checks
 godot --headless --path . res://examples/headless_net.tscn   # 14 sections, 135 checks
 tools/shot.sh --view=field
 tools/shot.sh --view=lean
