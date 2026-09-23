@@ -95,6 +95,13 @@ const IMPACT_HURT_RADIUS := 2.4
 ## Damage a landing does to a player, per kilogram metre per second of impulse.
 const IMPACT_HURT_PER_IMPULSE := 0.055
 
+## Metres above the kill height at which a chopper counts as having reached the floor.
+##
+## A parked machine's origin rests 0.9 m above the surface it is on, measured, so a check at
+## the kill height itself never fires for one sitting on the floor. Two metres is that plus
+## a margin for a machine still bouncing, and is thirty-eight metres below any deck.
+const COPTER_FLOOR_CLEARANCE := 2.0
+
 signal player_added(player_id: StringName)
 signal player_removed(player_id: StringName)
 
@@ -629,6 +636,14 @@ func _build_match() -> void:
 	match_node.teams.teams = teams
 	match_node.teams.force_balance = config.autobalance
 	match_node.teams.allow_choice = config.allow_team_choice
+	# [b]Off, because `sides` is what decides a team and dot-match is only told.[/b]
+	# `max_difference` defaults to 1 and REFUSES a join that puts a side more than one
+	# ahead, which `force_balance` does not reach. Offline, every stand-in is put on team 2
+	# before the local player joins team 1, so dot-match took the first and left the other
+	# two on no team at all — and the elimination rule counts survivors off dot-match's
+	# teams, so a round ended when the one stand-in it knew about fell, with two still
+	# standing. The same line was wrong in mg-buses-from-hell.
+	match_node.teams.max_difference = 0
 	match_node.teams.reindex()
 
 
@@ -709,7 +724,14 @@ func add_player(
 	sides[player_id] = team
 
 	if match_node != null:
-		var _seated := match_node.add_player(String(player_id), display_name, _tick, team)
+		var seated := match_node.add_player(String(player_id), display_name, _tick, team)
+
+		# ERROR, because a refusal here leaves the round rule counting a side short, and the
+		# last time one was refused nothing said so.
+		if not seated.ok:
+			DotLog.error(CHANNEL, "dot-match refused a player's side", {
+				"id": String(player_id), "team": team, "why": seated.error.message,
+			})
 
 	# [b]Placed NOW, and not only at the top of a round.[/b] `_place_players` runs when a
 	# round is laid out, so a player who joins in the middle of one was left wherever a
@@ -1803,19 +1825,54 @@ func _watch_falls() -> void:
 	for id: StringName in players:
 		var player: ScPlayer = players[id]
 
-		if not player.is_alive() or player.riding:
+		if not player.is_alive():
+			continue
+
+		if player.riding:
+			_watch_rider_fall(player)
 			continue
 
 		if player.controller.state.position.y > config.kill_height:
 			continue
 
-		var damage := DotDamage.make(0, player.entity_id, player.health.max_health * 4.0, null)
-		damage.point = player.controller.state.position
-		damage.direction = Vector3.DOWN
-		damage.tick = _tick
-		damage.context = {"why": DIED_FELL}
+		_kill_by_fall(player, player.controller.state.position)
 
-		var _applied := combat.apply_damage(damage)
+
+## A rider falls with the machine, and that was the one way to survive the floor.
+##
+## [b]A rider's own position is not where they are.[/b] The controller stops moving while it
+## is carried, so the height check above would read wherever they climbed aboard — which is
+## why riders were skipped outright. And skipping them made the floor survivable: a pilot
+## who put the chopper down on it sat there out of the cannon's reach until the clock ran
+## out, and one who flew it off the edge of the map fell for the rest of the round, alive,
+## and was handed a weapon in the corners like anybody who had earned it. So a rider is
+## measured by the MACHINE, and a machine within [constant COPTER_FLOOR_CLEARANCE] of the
+## floor has reached it — its origin rests that far above the surface on its skids, so a
+## check at the kill height alone would never fire for one parked there.
+##
+## Out of the seat first: a player who died seated would stay in the ride's table, and the
+## next round's [method _clear_world] would be exiting somebody who is not there.
+func _watch_rider_fall(player: ScPlayer) -> void:
+	var aboard := vehicles.get_vehicle(ride.vehicle_id_of(player.player_id))
+	var body := aboard.body() if aboard != null else null
+
+	if body == null or body.global_position.y > config.kill_height + COPTER_FLOOR_CLEARANCE:
+		return
+
+	var at := body.global_position
+	var _out := ride.exit(aboard, player.player_id, true)
+
+	_kill_by_fall(player, at)
+
+
+func _kill_by_fall(player: ScPlayer, at: Vector3) -> void:
+	var damage := DotDamage.make(0, player.entity_id, player.health.max_health * 4.0, null)
+	damage.point = at
+	damage.direction = Vector3.DOWN
+	damage.tick = _tick
+	damage.context = {"why": DIED_FELL}
+
+	var _applied := combat.apply_damage(damage)
 
 
 # --- Weapons, once there are any --------------------------------------------

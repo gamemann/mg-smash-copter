@@ -85,6 +85,9 @@ var _captured: bool = false
 ## The camera rig, in third person. Null in first.
 var _arm: SpringArm3D = null
 
+## How far above the player's feet the camera, or in third person the arm, is hung.
+var _rig_height: float = 0.0
+
 ## Held buttons, read once a tick rather than sampled from an event queue.
 var _firing: bool = false
 var _alt: bool = false
@@ -475,6 +478,7 @@ func _place_camera(seated: bool) -> void:
 
 	if not third_person:
 		player.add_child(camera)
+		_rig_height = eye
 		camera.position = Vector3(0.0, eye, 0.0)
 		camera.rotation = Vector3.ZERO
 		return
@@ -485,7 +489,8 @@ func _place_camera(seated: bool) -> void:
 	# The player's own capsule is not what the arm should stop against, and the map is.
 	_arm.collision_mask = game.physics.collision_mask(&"player") if game.physics != null else 1
 	_arm.add_excluded_object(player.get_rid())
-	_arm.position = Vector3(0.0, eye + CHASE_UP - ScPlayer.EYE_HEIGHT, 0.0)
+	_rig_height = eye + CHASE_UP - ScPlayer.EYE_HEIGHT
+	_arm.position = Vector3(0.0, _rig_height, 0.0)
 	player.add_child(_arm)
 
 	_arm.add_child(camera)
@@ -635,10 +640,29 @@ func _process(delta: float) -> void:
 	var pitch := deg_to_rad(state.pitch)
 	var yaw := deg_to_rad(state.yaw)
 
+	var rig: Node3D = camera
+
 	if _arm != null and is_instance_valid(_arm):
-		_arm.rotation = Vector3(pitch, yaw, 0.0)
+		rig = _arm
+
+	rig.rotation = Vector3(pitch, yaw, 0.0)
+
+	# [b]And the position from between the last two ticks, which the angles above never
+	# needed.[/b] The rig hangs off the player's node and the node only moves on a tick, so
+	# a camera left there advances in steps: measured offline at 64 ticks and 144 frames,
+	# 160 frames in 288 did not move at all while the player ran, and the per-frame step
+	# varied by 112%. `render_state` blends the last two ticks by the engine's own physics
+	# fraction, which this client makes a fraction through a tick by running the engine at
+	# the world's rate. Written globally rather than by moving the node, because the tick
+	# writes the node and prediction reads it back.
+	#
+	# Not while riding: the controller is not simulated then, the machine carries the node,
+	# and a blend between two ticks that never happened would drag the view backwards.
+	if not player.riding:
+		var drawn := player.controller.render_state()
+		rig.global_position = drawn.position + Vector3(0.0, _rig_height, 0.0)
 	else:
-		camera.rotation = Vector3(pitch, yaw, 0.0)
+		rig.position = Vector3(0.0, _rig_height, 0.0)
 
 	if weapons != null:
 		var speed := Vector2(state.velocity.x, state.velocity.z).length()

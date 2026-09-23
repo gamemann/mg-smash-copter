@@ -21,7 +21,7 @@ const ScPlayer := preload("../game/sc_player.gd")
 ## and those are what this is about.
 
 const SECTIONS := 6
-const CHECKS := 43
+const CHECKS := 44
 
 ## The port this test listens on. Nothing else on a developer's machine is likely to be
 ## holding it, and a boot that failed on a busy 27015 would look like the module being
@@ -351,6 +351,7 @@ func _test_a_round_runs() -> void:
 		for what in [
 			"the round starts", "it reaches the corners", "and the showdown",
 			"the cannon threw something", "and the field took damage",
+			"and lag compensation keeps nothing for what the server let go",
 		]:
 			_check(false, what)
 
@@ -401,6 +402,23 @@ func _test_a_round_runs() -> void:
 			worst, game.platforms.standing_count(), game.platforms.count()
 		]
 	)
+
+	# [b]The round began inside the netcode's own tick, and that is the case this is for.[/b]
+	# The boot field is replaced by round one's from inside `DotNetManager.server_tick`,
+	# which then records lag-compensation history for the identity list it took before the
+	# platforms were let go of — re-creating a track for every id the registry had just told
+	# it to forget. Nothing reads them and nothing frees them: twelve per round, for the
+	# life of the server. `history._tracks` is read directly because a leak is exactly what
+	# no public accessor of the history would report.
+	var net: DotNetManager = module.net
+	var orphans: Array[int] = []
+
+	for net_id: int in net.history._tracks.keys():
+		if not net.registry.has(net_id):
+			orphans.append(net_id)
+
+	_check(orphans.is_empty(), "and lag compensation keeps nothing for what the server let go",
+		"%d tracks, %d orphaned %s" % [net.history._tracks.size(), orphans.size(), str(orphans)])
 
 	_finished()
 

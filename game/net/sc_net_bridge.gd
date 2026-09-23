@@ -159,6 +159,19 @@ var _ready_peers: Dictionary = {}
 
 var _tick: int = 0
 var _game_ticked_for: int = -1
+
+## Server only: whether [method DotNetManager.server_tick] is on the stack, and the net ids
+## let go of while it was.
+##
+## [b]A round re-laid mid-tick leaks a lag-compensation track per platform, for ever.[/b]
+## The world ticks inside the first player behaviour's `_net_simulate`, so a round that ends
+## there unregisters every platform while `server_tick` is still holding the identity list
+## it took before simulating — and then records history for that list. The registry has
+## already told the history to forget each id; the record makes a fresh track for it again,
+## and nothing ever forgets it a second time. Twelve orphaned tracks per round, measured.
+## Forgotten again here once the manager has let go of its list.
+var _in_server_tick := false
+var _unregistered_in_tick: Array[int] = []
 var _client_ticked_for: int = -1
 
 ## The layout the client was last told about, so it can be re-sent to a late joiner.
@@ -476,6 +489,14 @@ func _build_entity(player: ScPlayer, peer_id: int) -> DotNetIdentity:
 	return identity
 
 
+## Server side. See [member _in_server_tick] for why an id let go of mid-tick is remembered.
+func _unregister(net_id: int) -> void:
+	net.registry.unregister(net_id)
+
+	if _in_server_tick:
+		_unregistered_in_tick.append(net_id)
+
+
 func _release_entity(session_id: int) -> void:
 	var behaviour: ScPlayerNet = _behaviours.get(session_id)
 	_behaviours.erase(session_id)
@@ -483,7 +504,7 @@ func _release_entity(session_id: int) -> void:
 	if behaviour == null or behaviour.identity == null or net == null:
 		return
 
-	net.registry.unregister(behaviour.identity.net_id)
+	_unregister(behaviour.identity.net_id)
 
 
 # --- Server: the world -----------------------------------------------------
@@ -669,7 +690,7 @@ func _forget_body(key: String, reason: StringName) -> void:
 	_net_of.erase(key)
 	_bodies.erase(net_id)
 
-	net.registry.unregister(net_id)
+	_unregister(net_id)
 	_broadcast(ScEvents.Kind.PROP_GONE, ScEvents.write_prop_gone(net_id, reason))
 
 
@@ -751,7 +772,15 @@ func server_tick(tick: int) -> void:
 	_game_ticked_for = -1
 
 	if net != null:
+		_in_server_tick = true
 		net.server_tick(tick)
+		_in_server_tick = false
+
+		for net_id in _unregistered_in_tick:
+			if not net.registry.has(net_id):
+				net.history.forget(net_id)
+
+		_unregistered_in_tick.clear()
 
 	# Belt and braces: `net.server_tick` drives the entities, and the first player behaviour
 	# through calls `ensure_game_ticked`. A server with nobody on it has no behaviours at

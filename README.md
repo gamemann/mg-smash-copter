@@ -21,8 +21,8 @@ It is a first- and third-person multiplayer minigame built on the `dot-*` addon 
 
 ```bash
 godot --path .                                                # play it, alone, against stand-ins
-godot --headless --path . res://examples/headless_run.tscn    # the simulation, 103 checks
-godot --headless --path . res://examples/dedicated.tscn       # as a real server, 43 checks
+godot --headless --path . res://examples/headless_run.tscn    # the simulation, 116 checks
+godot --headless --path . res://examples/dedicated.tscn       # as a real server, 44 checks
 godot --headless --path . res://examples/headless_net.tscn     # over the wire, 134 checks
 tools/shot.sh --view=field                                    # render a frame and look at it
 ```

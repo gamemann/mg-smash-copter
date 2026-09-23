@@ -43,7 +43,7 @@ assets/kenney/      eight CC0 models and two atlases
 assets/{blaster-kit,melee,arms}/  the weapon pack's own art, vendored
 textures/prototype/ six CC0 prototype textures, one per role
 scenes/             sc_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (113), dedicated (43), headless_net (134)
+examples/           headless_run (116), dedicated (44), headless_net (134)
 tools/              shot.gd/.tscn/.sh — render a frame and look at it
 ```
 
@@ -91,6 +91,8 @@ The whole complex is a map's width away along -Z now. It is still in plain sight
 
 Every one of these was found by running the game or by looking at a picture of it, and not one of them errored.
 
+- **dot-match left two of the three offline stand-ins on no team, so a round ended one stand-in early.** The offline client puts every stand-in on team 2 before the local player joins team 1, and dot-match's `max_difference` defaults to 1 and refuses any join that puts a side two ahead — a rule `force_balance = false` does not reach. `sides` had all three on team 2; dot-match knew about one, and its elimination rule counts survivors off its own teams. `max_difference` is 0 now, since `sides` is what decides a team, and a refused join logs at ERROR instead of being discarded into `_seated`. `headless_run`'s "dot-match puts everybody where the game did" fails without it, naming bot1 and bot2. mg-buses-from-hell had the same line wrong.
+
 - **The platform normal had the wrong sign, so every platform leaned away from whatever was standing on it.** `normal()` returned `(-sin(lean.x), 1, -sin(lean.y))`, which is what it looks like it should be and is backwards: a plane through the pivot with normal `(sin t, cos t, 0)` puts a point at `+x` BELOW the pivot. Every other symptom was correct — it tipped, it collapsed at the right angle, it carried people — in the wrong direction. The suite caught it only because the check was written to measure the SURFACE rather than the state.
 
 - **The bridge held a dozen freed nodes, once a tick, for ever.** A platform's replication behaviour is a child of the platform's own body, so clearing the field frees the behaviours with it — and the bridge's table of replicated bodies was only cleaned up on the REBUILD, which happens after. The dedicated run printed *"Trying to assign invalid previously freed instance"* twenty-three times before anybody noticed what it was. There is a `world_clearing` signal now, and a validity guard in the tick loop as well, because anything that frees a body frees its behaviour.
@@ -116,6 +118,12 @@ Every one of these was found by running the game or by looking at a picture of i
 - **A client rebuilding its field never unregistered the old one.** The server has `world_clearing` for this; a client is told rather than asked, so `_apply_layout` had no equivalent and left a dozen identities in the registry pointing at freed nodes.
 
 - **The health number was drawn underneath the chat box.** Both anchor bottom-left. Invisible to every headless assertion, because a headless viewport is 64 × 64 and nothing in one can overlap anything.
+
+- **A seat made the floor survivable.** The fall check skipped riders, because a rider's own position stops moving while they are carried — so a pilot who put the chopper down on the floor sat there out of the cannon's reach, and one who flew it off the edge of the map fell for the rest of the round, alive, and was handed a weapon in the corners either way. A rider is measured by the machine now, and a machine within two metres of the kill height has reached the floor: a parked one's origin rests 0.9 m above it, so a check at the kill height alone never fires.
+
+- **Every round leaked a lag-compensation track per platform.** The round begins inside `DotNetManager.server_tick`, which records history for the identity list it took before the old field was let go of — re-creating a track for each id the registry had just told it to forget. Twelve per round, for the life of the server, and nothing reads them. The bridge forgets them again once the manager's tick returns; the dedicated suite counts orphaned tracks. The ten `!is_inside_tree()` engine errors at round one are the same stale list and are dot-net's to fix.
+
+- **The camera moved only on a tick.** It hangs off the player's node, which the tick writes, so at 64 ticks against 144 frames 160 frames in 288 did not move at all while the player ran. `_process` draws the rig from `DotFpsController.render_state` now (per-frame speed variation 112% to 3%, measured), and `place_at` goes through `teleport` so the handover does not sweep the view across the map for a frame.
 
 ## What DELIVERING it found
 
@@ -197,8 +205,8 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 15 sections, 113 checks
-godot --headless --path . res://examples/dedicated.tscn      # 7 sections, 43 checks
+godot --headless --path . res://examples/headless_run.tscn   # 16 sections, 116 checks
+godot --headless --path . res://examples/dedicated.tscn      # 7 sections, 44 checks
 godot --headless --path . res://examples/headless_net.tscn   # 14 sections, 134 checks
 tools/shot.sh --view=field
 tools/shot.sh --view=lean

@@ -30,7 +30,7 @@ const ScSpecials := preload("../game/sc_specials.gd")
 ## `set_physics_process(false)` goes on first and every section advances the world itself.
 
 ## Sections entered, against sections that ran to their last line.
-const SECTIONS := 15
+const SECTIONS := 16
 
 ## And the total this counter cannot be.
 ##
@@ -38,7 +38,7 @@ const SECTIONS := 15
 ## checks that already ran still print ok, the ones after it never happen, and the section
 ## counter is satisfied because the section announced itself on the way in. dot-settings
 ## reported "8 sections, 63 passed, 0 failed" and exited 0 with eight checks missing.
-const CHECKS := 113
+const CHECKS := 116
 
 const TICK_RATE := 64
 const TICK := 1.0 / float(TICK_RATE)
@@ -74,6 +74,7 @@ func _run() -> void:
 	await _test_an_impact()
 	await _test_falling_off()
 	await _test_the_round()
+	await _test_sides_agree()
 	await _test_specials()
 	await _test_a_shot_lands()
 	await _test_the_chopper()
@@ -595,6 +596,30 @@ func _test_an_impact() -> void:
 	_finished()
 
 
+func _test_sides_agree() -> void:
+	_section("dot-match puts everybody where the game did")
+
+	var game := await _world()
+
+	# The offline client's own line-up: every stand-in on team 2 before anybody is on 1.
+	# dot-match's default refuses a join that puts a side two ahead, and its elimination
+	# rule counts survivors off its own teams — so a refused stand-in is one it never sees.
+	for i in range(3):
+		game.add_player(StringName("bot%d" % i), "Stand-in", 2)
+	game.add_player(&"local", "You", 1)
+
+	var disagree: Array[String] = []
+	for id: StringName in game.players:
+		if game.match_node.teams.team_of(String(id)) != game.team_of(id):
+			disagree.append(String(id))
+
+	_check(disagree.is_empty(), "every stand-in is on a side dot-match can count",
+		"it disagrees about %s" % ", ".join(disagree))
+
+	await _dispose(game)
+	_finished()
+
+
 func _test_falling_off() -> void:
 	_section("running out of map is fatal")
 
@@ -908,6 +933,8 @@ func _test_the_chopper() -> void:
 		_check(false, "it climbs on full collective")
 		_check(false, "and holds height at neutral")
 		_check(false, "and will not climb past its ceiling")
+		_check(false, "a pilot who puts it down on the floor has fallen")
+		_check(false, "and it is recorded as a fall")
 		await _dispose(game)
 		_finished()
 		return
@@ -963,6 +990,38 @@ func _test_the_chopper() -> void:
 
 	_check(body.linear_velocity.y <= 0.5, "and will not climb past its ceiling",
 		"%.2f m/s" % body.linear_velocity.y)
+
+	# [b]The floor is the one thing nobody survives, and a seat used to be the exception.[/b]
+	# A rider was skipped by the fall check because their own position stops moving while
+	# they are carried — so a pilot could park on the floor out of the cannon's reach, or fly
+	# off the edge of the map and fall for the rest of the round, and be handed a weapon in
+	# the corners either way. Measured by the machine now, parked where it would really rest.
+	var pilot := game.add_player(&"pilot", "Pilot", 1)
+	game.add_player(&"other", "Other", 2)
+
+	var deaths: Array[StringName] = []
+	game.player_died.connect(
+		func(id: StringName, _by: StringName, why: StringName) -> void:
+			if id == &"pilot":
+				deaths.append(why)
+	)
+
+	body.global_position = Vector3(0.0, game.config.deck_height, game.arena._field_reach() + 10.0)
+	body.linear_velocity = Vector3.ZERO
+	pilot.place_at(body.global_position + Vector3(1.0, 0.0, 0.0), 0.0)
+	var boarded := game.try_board(&"pilot")
+
+	body.global_position.y = game.config.kill_height + 0.9
+
+	for _i in range(4):
+		game.simulate(TICK)
+		await _physics_frame()
+
+	_check(boarded.ok and not pilot.is_alive() and not pilot.riding,
+		"a pilot who puts it down on the floor has fallen",
+		"boarded %s, alive %s, riding %s" % [boarded.ok, pilot.is_alive(), pilot.riding])
+	_check(deaths.has(ScGame.DIED_FELL), "and it is recorded as a fall",
+		", ".join(Array(deaths).map(func(v: Variant) -> String: return String(v))))
 
 	await _dispose(game)
 	_finished()

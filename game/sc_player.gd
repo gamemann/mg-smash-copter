@@ -373,11 +373,11 @@ func set_riding(value: bool) -> void:
 func place_at(at: Vector3, yaw_degrees: float) -> void:
 	global_position = at
 
-	controller.state.position = at
-	controller.state.velocity = Vector3.ZERO
-	controller.state.yaw = yaw_degrees
-	controller.state.pitch = 0.0
-	controller.state.mode = DotFpsState.Mode.AIR
+	# Through `teleport` rather than by writing the state, because it also resets the tick
+	# the client draws FROM. The camera is drawn between the last two ticks, and a state
+	# written by hand leaves the previous one where the player was — so the handover to the
+	# corners would sweep the view across the map for a frame.
+	controller.teleport(at, yaw_degrees, 0.0)
 
 	if sampler != null:
 		sampler.look_at_angles(yaw_degrees, 0.0)
