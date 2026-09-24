@@ -69,6 +69,7 @@ const WHY_LEAN := &"lean"        ## Somebody stood in the wrong place for too lo
 const WHY_BROKEN := &"broken"    ## Enough impacts added up.
 const WHY_SHATTERED := &"shattered"  ## One impact was simply too big.
 const WHY_ROUND := &"round"      ## The round asked for the field to be cleared.
+const WHY_UNSUPPORTED := &"unsupported"  ## A bridge lost a platform it was resting on.
 
 ## Radians per second a falling platform tips over at, on top of the lean it fell with.
 ##
@@ -96,6 +97,13 @@ class Deck extends RefCounted:
 
 	## Whether this is a walkway between two rows rather than a platform on a pillar.
 	var is_bridge: bool = false
+
+	## For a bridge: the platforms it rests on, at its row's end and at the next row's, as
+	## deck indices. `-1` where there is none, and a bridge missing either is a free spring.
+	var supports := Vector2i(-1, -1)
+
+	## And the world Z of the two lips it rests on, in the same order.
+	var lips := Vector2.ZERO
 
 	## Half the platform's side, in metres. Its footprint is a square about [member centre].
 	var half: float = 5.25
@@ -138,6 +146,10 @@ class Deck extends RefCounted:
 
 	func is_standing() -> bool:
 		return state == State.STANDING
+
+	## Whether this is a bridge carried by two platforms rather than a spring of its own.
+	func is_rested() -> bool:
+		return is_bridge and supports.x >= 0 and supports.y >= 0
 
 	## Whether this platform can still be stood on at all.
 	func is_live() -> bool:
@@ -267,6 +279,46 @@ func build_cells(
 		# thing joining two rows, so it is built from the same description with a different
 		# footprint rather than from a second code path.
 		_build_deck(cell.x, cell.y, cell.z == 1)
+
+	_rest_bridges()
+
+
+## Sets every bridge down on the two platforms it joins.
+##
+## [b]A bridge was a spring of its own until 2026-09-24, pivoting on a pillar it does not
+## have.[/b] The Spine's blurb calls the walkways "the steady ground", and the model made
+## them the least steady thing on the map: a bridge is longer than a platform is wide, so a
+## runner at its end had a longer lever than one at a platform's edge — 9.7 degrees against
+## 7.9 on The Spine, measured — and two runners at one end took a bridge down while the
+## platform next to it held at 15.7. It leaned in mid-air about its own middle, so where it
+## met a platform's lip there was a step whenever the two leaned differently.
+##
+## Now it is a plank on two lips. Its pitch is the line between the two lips' heights, its
+## roll is theirs, a load on it is carried by the two platforms in proportion to where it
+## stands, and it goes when either of them does. A bridge with a platform missing at one
+## end is still built as a spring, which no layout here does (see `_has_bridge`).
+func _rest_bridges() -> void:
+	var at: Dictionary = {}
+
+	for i in range(decks.size()):
+		if not decks[i].is_bridge:
+			at[Vector2i(decks[i].column, decks[i].row)] = i
+
+	for deck in decks:
+		if not deck.is_bridge:
+			continue
+
+		var near: int = at.get(Vector2i(deck.column, deck.row), -1)
+		var far: int = at.get(Vector2i(deck.column, deck.row + 1), -1)
+
+		if near < 0 or far < 0:
+			continue
+
+		deck.supports = Vector2i(near, far)
+		deck.lips = Vector2(
+			decks[near].centre.z + _footprint(decks[near]).y,
+			decks[far].centre.z - _footprint(decks[far]).y
+		)
 
 
 ## The cells this field was built from, in index order. What the wire carries.
@@ -647,6 +699,16 @@ func add_load(index: int, at: Vector3, kilos: float, motion: float = 0.0) -> voi
 	if deck == null or not deck.is_standing():
 		return
 
+	# A bridge's weight goes to the lips it rests on, shared by where along it the load is:
+	# the whole of it at one end, half each in the middle. That is what makes the middle of
+	# a bridge the steadiest place on the map and its ends a platform's edge by proxy.
+	if deck.is_rested():
+		var share := _share_along(deck, at.z)
+		deck.load_mass += kilos
+		add_load(deck.supports.x, Vector3(at.x, at.y, deck.lips.x), kilos * (1.0 - share), motion)
+		add_load(deck.supports.y, Vector3(at.x, at.y, deck.lips.y), kilos * share, motion)
+		return
+
 	var offset := Vector2(at.x - deck.centre.x, at.z - deck.centre.z)
 	var gain := 1.0
 
@@ -672,11 +734,57 @@ func step(delta: float) -> void:
 	for i in range(decks.size()):
 		var deck := decks[i]
 
+		# Afterwards, because a bridge lies wherever its two platforms have just put it.
+		if deck.is_rested() and deck.is_standing():
+			continue
+
 		match deck.state:
 			State.STANDING:
 				_step_standing(i, deck, delta)
 			State.FALLING:
 				_step_falling(i, deck, delta)
+
+	for i in range(decks.size()):
+		var deck := decks[i]
+
+		if deck.is_rested() and deck.is_standing():
+			_step_rested(i, deck, delta)
+
+
+## How far along a rested bridge a world Z is, from its near lip (0) to its far one (1).
+func _share_along(deck: Deck, z: float) -> float:
+	var length := deck.lips.y - deck.lips.x
+	return clampf((z - deck.lips.x) / length, 0.0, 1.0) if absf(length) > 0.001 else 0.5
+
+
+## Lays a bridge on its two lips. See [method _rest_bridges].
+func _step_rested(index: int, deck: Deck, delta: float) -> void:
+	var near := decks[deck.supports.x]
+	var far := decks[deck.supports.y]
+
+	if not near.is_standing() or not far.is_standing():
+		_collapse(index, deck, WHY_UNSUPPORTED)
+		return
+
+	deck.previous_normal = deck.normal()
+	deck.previous_sink = deck.sink
+
+	var was_lean := deck.lean
+	var was_sink := deck.sink
+	var high := _surface_y_of(near, deck.centre.x, deck.lips.x)
+	var low := _surface_y_of(far, deck.centre.x, deck.lips.y)
+	var length := maxf(deck.lips.y - deck.lips.x, 0.001)
+	var middle := (deck.lips.x + deck.lips.y) * 0.5
+
+	# The plane's Z slope is sin(lean.y) (see [method Deck.normal]); the roll is the two
+	# lips' own, averaged, because each end lies across a lip tilted by its platform's.
+	var pitch := clampf((high - low) / length, -1.0, 1.0)
+	deck.lean = Vector2((near.lean.x + far.lean.x) * 0.5, asin(pitch))
+	deck.sink = (high + low) * 0.5 - deck.centre.y + pitch * (middle - deck.centre.z)
+	deck.lean_velocity = (deck.lean - was_lean) / delta
+	deck.sink_velocity = (deck.sink - was_sink) / delta
+
+	_draw(deck)
 
 
 func _step_standing(index: int, deck: Deck, delta: float) -> void:
@@ -828,12 +936,32 @@ func report_impact(index: int, kilos: float, speed: float, at: Vector3) -> Impac
 		var direction := offset.normalized() if offset.length() > 0.01 else Vector2(1.0, 0.0)
 		offset = direction * deck.half * 0.25
 
-	deck.lean_velocity += offset * impulse * config.platform_impact_gain \
-		/ maxf(config.platform_inertia, 1.0)
+	if deck.is_rested():
+		# A bridge has no spring to lean, so the blow goes to the two lips it rests on, shared
+		# as a weight is. Its own health below still takes the damage.
+		var share := _share_along(deck, at.z)
+		var ends := [deck.supports.x, deck.supports.y]
+		var lips := [deck.lips.x, deck.lips.y]
+		var weights := [1.0 - share, share]
 
-	# And it is pressed down, so a heavy landing is visible even on a platform that was
-	# hit square.
-	deck.sink_velocity -= impulse / maxf(config.platform_inertia * 4.0, 1.0)
+		for end in range(2):
+			var support: Deck = decks[int(ends[end])]
+
+			if not support.is_standing():
+				continue
+
+			var arm := Vector2(at.x - support.centre.x, float(lips[end]) - support.centre.z)
+			support.lean_velocity += arm * impulse * float(weights[end]) \
+				* config.platform_impact_gain / maxf(config.platform_inertia, 1.0)
+			support.sink_velocity -= impulse * float(weights[end]) \
+				/ maxf(config.platform_inertia * 4.0, 1.0)
+	else:
+		deck.lean_velocity += offset * impulse * config.platform_impact_gain \
+			/ maxf(config.platform_inertia, 1.0)
+
+		# And it is pressed down, so a heavy landing is visible even on a platform that was
+		# hit square.
+		deck.sink_velocity -= impulse / maxf(config.platform_inertia * 4.0, 1.0)
 
 	var outcome := Impact.WOBBLE
 

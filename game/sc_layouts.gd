@@ -262,6 +262,18 @@ static func all(config: ScConfig) -> Array[Layout]:
 	# Steadier, because a map whose safe ground is a bridge wants the platforms either
 	# side of it to be the dangerous half rather than both halves at once.
 	spine.stiffness_scale = 1.15
+	# [b]And the walkways only became steady on 2026-09-24.[/b] Until then a bridge was a
+	# spring of its own on a pillar it does not have, longer than a platform is wide, so a
+	# runner at its end leaned it 9.7 degrees against 7.9 at a platform's edge, two runners
+	# took it down while the platform beside it held, and it met each lip with up to 0.85 m
+	# of step. It rests on the two lips it joins now (`ScPlatforms._rest_bridges`): one
+	# runner at its end tilts it 3.0, its middle not at all, and it falls only with a
+	# platform it is resting on — so crowding a bridge is what brings the two platforms
+	# under it down, which is the "everybody knows it" half of the blurb.
+	#
+	# Jumps along the rows, 0.90 m of air against a 3.97 m run (the reach section). Between
+	# the rows everything is walked: four bridges, the middle column's left out over the
+	# tube, and 13.5 m of air there that no jump reaches.
 	spine.jumps = Jumps.ALONG_ROWS
 	out.append(spine)
 

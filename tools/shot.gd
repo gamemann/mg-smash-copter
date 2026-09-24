@@ -27,6 +27,7 @@ const ScLayouts := preload("../game/sc_layouts.gd")
 ## tools/shot.sh --view=copter    # the chopper, close
 ## tools/shot.sh --view=showdown  # the corners the round is finished in
 ## tools/shot.sh --view=jump      # the first jump the layout means, from behind the runner
+## tools/shot.sh --view=bridge    # a bridge leant on at one end, from beside it
 ## tools/shot.sh --view=beacon    # an admin's beacon on a stand-in, from across the field
 ## tools/shot.sh --view=blind     # the local player's own eyes, blinded, through the real HUD
 ## [/codeblock]
@@ -154,6 +155,20 @@ func _place_camera(game: ScGame, view: String) -> void:
 				var line := Vector3(to.x - from.x, 0.0, to.z - from.z).normalized()
 				camera.global_position = from - line * 4.0 + Vector3.UP * 3.2
 				camera.look_at(to + Vector3.UP * 0.5, Vector3.UP)
+		"bridge":
+			# [b]From beside the first bridge, at deck height, with one end weighed down.[/b]
+			# What it answers is whether a bridge lies on its two lips: the loaded platform's
+			# near edge dips, and the bridge has to run from that dipped lip to the level one
+			# with no step at either end and no lean of its own.
+			var span := await _lean_a_bridge(game)
+
+			if span == null:
+				camera.global_position = Vector3(0.0, game.config.deck_height + 18.0, 42.0)
+				camera.look_at(Vector3(0.0, game.config.deck_height, 0.0), Vector3.UP)
+			else:
+				var outside := -1.0 if span.centre.x <= 0.0 else 1.0
+				camera.global_position = span.centre + Vector3(outside * 11.0, 1.4, 0.0)
+				camera.look_at(span.centre + Vector3(0.0, -0.8, 0.0), Vector3.UP)
 		"beacon":
 			var marked := _beacon_a_stand_in(game)
 
@@ -221,6 +236,31 @@ func _lean_one(game: ScGame) -> void:
 		await get_tree().process_frame
 
 	print("leaned platform 0 by %.1f degrees toward +X" % rad_to_deg(deck.tilt()))
+
+
+## Weighs the near end of the first bridge down, so there is a slope to photograph.
+func _lean_a_bridge(game: ScGame) -> ScPlatforms.Deck:
+	var platforms := game.platforms
+
+	for i in range(platforms.count()):
+		var span := platforms.deck_at(i)
+
+		if not span.is_bridge:
+			continue
+
+		var at := Vector3(span.centre.x, span.centre.y, span.lips.x + 0.8)
+
+		for _i in range(120):
+			platforms.begin_loads()
+			platforms.add_load(i, at, 420.0, 0.0)
+			platforms.step(1.0 / 64.0)
+			await get_tree().process_frame
+
+		print("bridge %d: %.1f degrees; the loaded platform %.1f" % [
+			i, rad_to_deg(span.tilt()), rad_to_deg(platforms.deck_at(span.supports.x).tilt())])
+		return span
+
+	return null
 
 
 ## Turns a beacon on over the first stand-in that is up, and returns them.

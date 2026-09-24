@@ -31,7 +31,7 @@ const ScSpecials := preload("../game/sc_specials.gd")
 ## `set_physics_process(false)` goes on first and every section advances the world itself.
 
 ## Sections entered, against sections that ran to their last line.
-const SECTIONS := 21
+const SECTIONS := 23
 
 ## And the total this counter cannot be.
 ##
@@ -39,7 +39,7 @@ const SECTIONS := 21
 ## checks that already ran still print ok, the ones after it never happen, and the section
 ## counter is satisfied because the section announced itself on the way in. dot-settings
 ## reported "8 sections, 63 passed, 0 failed" and exited 0 with eight checks missing.
-const CHECKS := 140
+const CHECKS := 149
 
 const TICK_RATE := 64
 const TICK := 1.0 / float(TICK_RATE)
@@ -83,6 +83,8 @@ func _run() -> void:
 	await _test_the_throat()
 	await _test_the_showdown_walk()
 	await _test_the_zigzag()
+	await _test_the_spine()
+	await _test_a_slope_holds()
 	await _test_blind_and_beacon_drawn()
 
 	for world in _worlds.duplicate():
@@ -1363,6 +1365,219 @@ func _test_the_zigzag() -> void:
 		"%.1f m" % runner.controller.state.position.y)
 
 	await _dispose(game)
+	_finished()
+
+
+## The Spine's blurb: "the walkways are the steady ground". Until 2026-09-24 a bridge was a
+## spring of its own pivoting on a pillar it does not have, and one runner at its end leaned
+## it 9.7 degrees against 7.9 for the same runner at a platform's edge; two took it down.
+## See [method ScPlatforms._rest_bridges].
+func _test_the_spine() -> void:
+	_section("The Spine's walkways are the steady ground")
+
+	var game := await _world(func(c: ScConfig) -> void:
+		c.cannon_enabled = false
+		c.specials_enabled = false
+		c.layout_ids = PackedStringArray(["spine"])
+	)
+	var platforms := game.platforms
+
+	var bridges := 0
+	var rested := 0
+
+	for i in range(platforms.count()):
+		var deck := platforms.deck_at(i)
+
+		if deck.is_bridge:
+			bridges += 1
+			rested += 1 if deck.is_rested() else 0
+
+	_check(bridges >= 4 and rested == bridges,
+		"every bridge on The Spine rests on the two platforms it joins",
+		"%d of %d" % [rested, bridges])
+
+	# The model alone, on a field of its own: one runner's weight at a bridge's end against
+	# the same at a platform's edge, each held until the spring has found its angle.
+	var bridge_end := _spine_lean(true)
+	var platform_edge := _spine_lean(false)
+	_check(bridge_end < platform_edge * 0.5,
+		"a runner at a bridge's end tilts it less than half what a platform's edge does",
+		"%.1f deg against %.1f" % [rad_to_deg(bridge_end), rad_to_deg(platform_edge)])
+
+	# Driven: running, not walking, from the middle of (0,0) over the bridge to (0,1).
+	var from := _deck_at_cell(platforms, 0, 0)
+	var to := _deck_at_cell(platforms, 0, 1)
+	var bridge := -1
+
+	for i in range(platforms.count()):
+		var deck := platforms.deck_at(i)
+
+		if deck.is_bridge and deck.column == 0 and deck.row == 0:
+			bridge = i
+
+	var runner := game.add_player(&"runner", "Runner", 1)
+	game.add_player(&"other", "Other", 2)
+	runner.place_at(platforms.deck_at(from).centre + Vector3.UP * 0.2, 0.0)
+	await _step(game, 20)
+
+	var target := platforms.deck_at(to).centre
+	var span := platforms.deck_at(bridge)
+	var worst_bridge := 0.0
+	var worst_step := 0.0
+	var lowest := INF
+	var crossed_on := false
+	var arrived := false
+
+	for _i in range(int(6.0 * TICK_RATE)):
+		var at := runner.controller.state.position
+		var toward := Vector3(target.x - at.x, 0.0, target.z - at.z)
+
+		if toward.length() < 1.0:
+			arrived = true
+			break
+
+		var command := DotFpsCommand.new()
+		command.yaw = rad_to_deg(atan2(-toward.x, -toward.z))
+		command.move = Vector2(0.0, 1.0)
+		runner.controller.apply_command(command)
+		game.simulate(TICK)
+		await _physics_frame()
+
+		lowest = minf(lowest, runner.controller.state.position.y)
+		worst_bridge = maxf(worst_bridge, span.tilt())
+		crossed_on = crossed_on or runner.standing_on == bridge
+
+		# Where the bridge meets each lip there is no step, whatever the platforms are doing.
+		var x := span.centre.x
+		worst_step = maxf(worst_step, absf(
+			platforms.surface_y(bridge, x, span.lips.x) - platforms.surface_y(from, x, span.lips.x)))
+		worst_step = maxf(worst_step, absf(
+			platforms.surface_y(bridge, x, span.lips.y) - platforms.surface_y(to, x, span.lips.y)))
+
+	await _step(game, 10)
+
+	_check(crossed_on and arrived and runner.standing_on == to and runner.is_alive(),
+		"a runner crosses a bridge from one row to the other",
+		"on %d, alive %s, lowest %.2f m against a deck at %.2f" % [
+			runner.standing_on, runner.is_alive(), lowest, game.config.deck_height])
+	# Not the runner's height: the lip they leave from dips most of a metre under a runner,
+	# which is the platform doing its job. The bridge is what is being asked about.
+	_check(worst_bridge < deg_to_rad(4.0),
+		"and the bridge under them never tilts past four degrees",
+		"%.1f deg" % rad_to_deg(worst_bridge))
+	_check(worst_step < 0.02, "and meets both lips with no step",
+		"%.3f m at worst" % worst_step)
+
+	# And it goes with either platform it rests on.
+	var why: Array[StringName] = []
+	platforms.collapsed.connect(func(index: int, reason: StringName) -> void:
+		if index == bridge:
+			why.append(reason))
+	var _fell := platforms.collapse(from, ScPlatforms.WHY_SHATTERED)
+	await _step(game, 2)
+	_check(not span.is_standing() and why.has(ScPlatforms.WHY_UNSUPPORTED),
+		"and falls when a platform it rests on does", str(why))
+
+	await _dispose(game)
+	_finished()
+
+
+## The equilibrium lean one runner's weight at a bridge's end, or at a platform's edge, puts
+## on it, on The Spine's own field.
+func _spine_lean(on_bridge: bool) -> float:
+	var config := ScConfig.new()
+	var platforms := ScPlatforms.new()
+	platforms.config = config
+	add_child(platforms)
+	platforms.build(ScLayouts.by_id(config, &"spine"))
+
+	var index := -1
+
+	for i in range(platforms.count()):
+		if platforms.deck_at(i).is_bridge == on_bridge:
+			index = i
+			break
+
+	var deck := platforms.deck_at(index)
+	var half := platforms._footprint(deck)
+	var at := deck.centre + (Vector3(0.0, 0.0, half.y * 0.9) if on_bridge \
+		else Vector3(half.x * 0.9, 0.0, 0.0))
+	var worst := 0.0
+
+	for _i in range(8 * TICK_RATE):
+		platforms.begin_loads()
+		platforms.add_load(index, at, config.player_mass, config.run_speed)
+		platforms.step(TICK)
+		worst = maxf(worst, deck.tilt())
+
+	remove_child(platforms)
+	platforms.free()
+	return worst
+
+
+## [b]The slide angle is the design, and slopes being walkable must not have moved it.[/b]
+## dot-player-controller made a slope under `max_slope_angle` walkable on 2026-09-24; this
+## game's is 14 degrees against a collapse at 16, so a player is meant to hold a platform
+## leaning 13.5 (and walk up it), and to be thrown off one leaning 15.
+func _test_a_slope_holds() -> void:
+	_section("a leaning platform holds a player below the slide angle, and not above it")
+
+	var drift := {}
+
+	for degrees: float in [13.5, 15.0]:
+		for uphill: bool in [false, true]:
+			var game := await _world(func(c: ScConfig) -> void:
+				c.cannon_enabled = false
+				c.specials_enabled = false
+				c.layout_ids = PackedStringArray(["full"])
+			)
+			var platforms := game.platforms
+			# Held at an angle rather than leant on: the model would move it under them.
+			platforms.authoritative = false
+			var lean := Vector2(deg_to_rad(degrees), 0.0)
+			var deck := platforms.deck_at(0)
+			platforms.adopt(0, lean, 0.0, ScPlatforms.State.STANDING)
+
+			var player := game.add_player(&"stander", "Stander", 1)
+			var start := deck.centre + Vector3(2.0, 0.0, 0.0)
+			start.y = platforms.surface_y(0, start.x, start.z) + 0.05
+			player.place_at(start, 90.0)
+
+			# Settled first, as somebody already standing there when it tipped.
+			for _i in range(40):
+				platforms.adopt(0, lean, 0.0, ScPlatforms.State.STANDING)
+				game.simulate(TICK)
+				await _physics_frame()
+
+			var x := player.controller.state.position.x
+
+			for _i in range(TICK_RATE):
+				platforms.adopt(0, lean, 0.0, ScPlatforms.State.STANDING)
+				var command := DotFpsCommand.new()
+				command.yaw = 90.0  # toward -X, up the lean
+				command.move = Vector2(0.0, 1.0) if uphill else Vector2.ZERO
+				command.set_button(DotFpsCommand.BUTTON_WALK, uphill)
+				player.controller.apply_command(command)
+				game.simulate(TICK)
+				await _physics_frame()
+
+			drift["%.1f %s" % [degrees, "up" if uphill else "idle"]] = \
+				player.controller.state.position.x - x
+			await _dispose(game)
+
+	# +X is downhill.
+	_check(absf(drift["13.5 idle"]) < 0.1, "a player stands still on a platform at 13.5 degrees",
+		"%.2f m" % drift["13.5 idle"])
+	_check(drift["13.5 up"] < -1.5, "and walks up it",
+		"%.2f m in a second" % drift["13.5 up"])
+	# Only standing still is asserted at 15. Pressing uphill there is dot-player-controller's
+	# steep-surface air control, which holds a body against a slope the way it holds a surfer
+	# on a ramp — so a player who keeps pushing climbs a platform past its slide angle. It is
+	# in the detail and in the Queue rather than asserted, because it is the addon's.
+	_check(drift["15.0 idle"] > 0.5,
+		"and at 15 a player standing still slides down it",
+		"%.2f m in a second; pushing uphill instead, %.2f m" % [
+			drift["15.0 idle"], drift["15.0 up"]])
 	_finished()
 
 

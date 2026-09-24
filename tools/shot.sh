@@ -7,6 +7,7 @@
 #   tools/shot.sh --view=copter       # the chopper, close
 #   tools/shot.sh --view=showdown     # the corners the round is finished in
 #   tools/shot.sh --view=jump         # the first jump the layout means, from behind it
+#   tools/shot.sh --view=bridge       # a bridge leant on at one end, from beside it
 #   tools/shot.sh --view=beacon       # an admin's beacon on a stand-in, from across the field
 #   tools/shot.sh --view=blind        # the local player's own eyes, blinded, through the HUD
 #   tools/shot.sh --view=field --seconds=20 --out=res://screenshots/late.png

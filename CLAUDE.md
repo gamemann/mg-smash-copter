@@ -59,7 +59,7 @@ assets/kenney/      eight CC0 models and two atlases
 assets/{blaster-kit,melee,arms}/  the weapon pack's own art, vendored
 textures/prototype/ six CC0 prototype textures, one per role
 scenes/             sc_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (140), dedicated (66), headless_net (161)
+examples/           headless_run (149), dedicated (66), headless_net (161)
 tools/              shot.gd/.tscn/.sh — render a frame and look at it; any --sc-* is config
 ```
 
@@ -155,7 +155,7 @@ Every one of these was found by running the game or by looking at a picture of i
 
 - **A seat made the floor survivable.** The fall check skipped riders, because a rider's own position stops moving while they are carried — so a pilot who put the chopper down on the floor sat there out of the cannon's reach, and one who flew it off the edge of the map fell for the rest of the round, alive, and was handed a weapon in the corners either way. A rider is measured by the machine now, and a machine within two metres of the kill height has reached the floor: a parked one's origin rests 0.9 m above it, so a check at the kill height alone never fires.
 
-- **Every round leaked a lag-compensation track per platform.** The round begins inside `DotNetManager.server_tick`, which records history for the identity list it took before the old field was let go of — re-creating a track for each id the registry had just told it to forget. Twelve per round, for the life of the server, and nothing reads them. The bridge forgets them again once the manager's tick returns; the dedicated suite counts orphaned tracks. The ten `!is_inside_tree()` engine errors at round one are the same stale list and are dot-net's to fix.
+- **Every round leaked a lag-compensation track per platform.** The round begins inside `DotNetManager.server_tick`, which records history for the identity list it took before the old field was let go of — re-creating a track for each id the registry had just told it to forget. Twelve per round, for the life of the server, and nothing reads them. The bridge forgets them again once the manager's tick returns; the dedicated suite counts orphaned tracks. The ten `!is_inside_tree()` engine errors at round one were the same stale list; dot-net fixed them, and `dedicated`'s real-server round asserts the engine reports no error at all (0 on 2026-09-24).
 
 - **The chequerboard had no jumps on it at all.** Its blurb is "Every jump is a diagonal", and a chequerboard's diagonals run from one ROW to the other — and the rows were 13.5 m of air apart on every layout. So it was five islands, 14.6 m apart along every diagonal against a running jump of 3.9, and a 0.88 column scale under a comment saying it "widened" the diagonals narrowed a spacing no diagonal crosses. The rows are pulled in to 0.525 of the pitch now and the field is moved half a row over (see the next entry), so each diagonal is 2.8 m of air and the next platform along a row is 12.3 m; `headless_run` drives a runner along all four diagonals and then straight along a row, which is a fall.
 
@@ -164,6 +164,10 @@ Every one of these was found by running the game or by looking at a picture of i
 - **A survivor could not walk off their own corner.** The catwalks were given kerbs on their long sides only, so that a junction would not be a step — and the pad's and the ring's own kerbs ran straight across those same junctions from the other side. dot-player-controller's step-up does not take a 0.34 m kerb 0.6 m deep at a walk or a run, whatever `step_height` says, so a runner stopped dead at their pad's edge and again at the ring's. "A pad is edged on four sides and a catwalk on two" counted the kerbs and passed. `_build_kerb` cuts an opening wherever a catwalk's strip crosses an edge, square on or oblique; the check counts SIDES now, and the showdown walk is what fails with the openings taken out.
 
 - **The camera moved only on a tick.** It hangs off the player's node, which the tick writes, so at 64 ticks against 144 frames 160 frames in 288 did not move at all while the player ran. `_process` draws the rig from `DotFpsController.render_state` now (per-frame speed variation 112% to 3%, measured), and `place_at` goes through `teleport` so the handover does not sweep the view across the map for a frame.
+
+- **The Spine's steady ground was the least steady thing on the map.** Its blurb is "the walkways are the steady ground", and a bridge was built as a platform with the pillar left out: the same torsion spring, pivoting about its own middle in mid-air. A bridge is 12.9 m long against a platform's 10.5, so one runner at its end leaned it 9.7 degrees where the same runner at a platform's edge leaned the platform 7.9; two runners at one end took the bridge down while the platform beside it held at 15.7; and because it leaned about its own middle rather than following the lips, it met them with up to 0.85 m of step under a runner. `_build_pillar`'s comment said a bridge "is held at both ends by the platforms it joins", and nothing held it. **A bridge rests on its two lips now** (`ScPlatforms._rest_bridges`): its pitch is the line between the two lips' heights, its roll is theirs, a load or a blow on it is shared between the two platforms by where along it it lands, and it falls (`WHY_UNSUPPORTED`) when either of them does. One runner at its end tilts it 3.0 degrees and nothing at its middle; `headless_run`'s Spine section drives a runner across one (2.6 degrees at worst, no step at either lip) and fails five ways with the old spring put back. It is every layout's bridges, not only The Spine's — every bridge in the catalogue joins two platforms — and the wire is unchanged, because a client adopts a bridge's lean and sink like any deck's.
+
+- **Slopes becoming walkable did not move the slide angle** (dot-player-controller 803308f, 2026-09-24). Held at a fixed lean, a player stands still at 13.5 degrees and walks up it at 2.3 m/s; at 15 a player standing still slides 3 m in a second — which is `max_slope_angle` 14 against a collapse at 16, as designed. **But a player who pushes uphill at 15 climbs it at 1.7 m/s**, on the addon's steep-surface air control (the surf behaviour), so the "floor throws people before it goes" only throws the ones who are not trying; and a player who LANDS moving uphill on a lean from about 12.3 degrees up stays airborne, gliding at air speed, for over a second. Both are in the Queue as the addon's; `headless_run` asserts the three that are this game's design.
 
 ## What DELIVERING it found
 
@@ -253,7 +257,7 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 21 sections, 140 checks
+godot --headless --path . res://examples/headless_run.tscn   # 23 sections, 149 checks
 godot --headless --path . res://examples/dedicated.tscn      # 10 sections, 66 checks
 godot --headless --path . res://examples/headless_net.tscn   # 16 sections, 161 checks
 tools/shot.sh --view=field
@@ -261,6 +265,7 @@ tools/shot.sh --view=lean
 tools/shot.sh --view=copter
 tools/shot.sh --view=showdown
 tools/shot.sh --view=jump --sc-layout-ids=checker   # the jump a layout means, from behind
+tools/shot.sh --view=bridge --sc-layout-ids=spine   # a bridge weighed down at one end, from beside it
 tools/shot.sh --view=beacon                         # an admin's beacon, from across the field
 tools/shot.sh --view=blind                          # a blinded player's own screen
 ```
