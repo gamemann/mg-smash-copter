@@ -16,7 +16,8 @@ const ScTextures := preload("../game/sc_textures.gd")
 ## machine somebody is flying, from any distance and at any angle, which on a map where it
 ## is usually a silhouette forty metres up is the whole of its presentation.
 
-const CHANNEL := "sc.copter.body"
+# No `const CHANNEL`: this spins a rotor and draws a machine whose state [ScCopter] owns and
+# logs, so there is nothing here an operator would act on.
 
 ## Metres. The hull a player and the world collide with.
 const HULL := Vector3(2.2, 1.8, 5.0)

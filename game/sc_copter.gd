@@ -73,6 +73,11 @@ var gravity: float = 20.0
 ## How fast it may fly over the ground. Taken from the tunables at bind time.
 var _top_speed: float = 19.0
 
+## Whether it was being held at the ceiling last tick, and whether it was on its back, so
+## both are logged on the edge rather than every tick they last.
+var _at_ceiling: bool = false
+var _inverted: bool = false
+
 
 func _setup() -> DotResult:
 	var body := vehicle.body()
@@ -136,7 +141,15 @@ func _apply_lift(body: RigidBody3D, command: DotVehicleCommand, weight: float) -
 
 	var ceiling := float(vehicle.meta.get(META_CEILING, 0.0))
 
-	if ceiling > 0.0 and body.global_position.y > ceiling:
+	var over := ceiling > 0.0 and body.global_position.y > ceiling
+
+	if over != _at_ceiling:
+		_at_ceiling = over
+		DotLog.debug(CHANNEL, "a chopper reached the ceiling" if over else "a chopper came down from the ceiling", {
+			"vehicle": _name(), "ceiling": "%.1f m" % ceiling,
+		})
+
+	if over:
 		# [b]Held rather than pushed back down.[/b] A ceiling that shoved would throw a
 		# pilot who touched it back through the map; one that simply stops holding them up
 		# lets them settle onto it, which reads as the air getting thin.
@@ -201,8 +214,18 @@ func _apply_levelling(body: RigidBody3D, transform: Transform3D) -> void:
 	# have a zero cross product, so the axis is undefined and the torque comes out NaN —
 	# which in Godot is a body that stops being simulated with nothing reported anywhere.
 	# An inverted chopper is pushed off its back onto a fixed axis instead.
+	var inverted := up.dot(Vector3.UP) < 0.0
+
+	# DEBUG, on the edge: an inverted machine rights itself, and a pilot who asks why theirs
+	# rolled is the reason anybody reads this.
+	if inverted != _inverted:
+		_inverted = inverted
+		DotLog.debug(CHANNEL, "a chopper went over on its back" if inverted else "a chopper righted itself", {
+			"vehicle": _name(),
+		})
+
 	if axis.length() < 0.0001:
-		if up.dot(Vector3.UP) < 0.0:
+		if inverted:
 			body.apply_torque(transform.basis.x * LEVEL_GAIN * body.mass * 0.4)
 		return
 
@@ -247,3 +270,7 @@ func describe() -> Dictionary:
 		out["climb"] = "%.1f m/s" % body.linear_velocity.y
 
 	return out
+
+
+func _name() -> String:
+	return String(vehicle.def.id) if vehicle != null and vehicle.def != null else "?"

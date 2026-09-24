@@ -420,6 +420,13 @@ func set_riding(value: bool) -> void:
 	riding = value
 	controller.state.velocity = Vector3.ZERO
 
+	# DEBUG: a state transition. Who boards is decided (and would be refused) in [ScGame];
+	# this is where the movement actually hands over, which is what a report of a pilot
+	# who "fell out" needs lined up against.
+	DotLog.debug(CHANNEL, "took a chopper's controls" if riding else "left a chopper's controls", {
+		"id": String(player_id),
+	})
+
 	if not riding:
 		controller.state.mode = DotFpsState.Mode.AIR
 

@@ -32,7 +32,8 @@ const ScLayouts := preload("../game/sc_layouts.gd")
 ## tools/shot.sh --view=blind     # the local player's own eyes, blinded, through the real HUD
 ## [/codeblock]
 
-const CHANNEL := "sc.shot"
+# No `const CHANNEL`: this is a command-line tool, and what it says is its output (`print`),
+# not a record for an operator's log.
 
 
 func _ready() -> void:

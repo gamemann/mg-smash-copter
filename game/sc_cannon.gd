@@ -60,6 +60,16 @@ var _cooldown: float = 0.0
 ## Prop instance id -> seconds it has been in the world.
 var _ages: Dictionary = {}
 
+## Whether the last shot was held for the prop budget, so the log says so on the edge
+## rather than once a shot.
+var _held_for_budget: bool = false
+
+## Whether this round has already said the catalogue gave it nothing to fire.
+var _said_nothing_to_fire: bool = false
+
+## Whether this round has already said the spawner refused a prop.
+var _said_refused: bool = false
+
 var shots_fired: int = 0
 var props_launched: int = 0
 
@@ -79,6 +89,9 @@ func begin_round() -> void:
 	_ages.clear()
 	shots_fired = 0
 	props_launched = 0
+	_held_for_budget = false
+	_said_nothing_to_fire = false
+	_said_refused = false
 
 
 ## One tick. [param elapsed] is how far into the survival phase the round is.
@@ -136,15 +149,27 @@ func fire(elapsed: float, active: ScSpecials.Active) -> int:
 
 func _launch_one(elapsed: float, active: ScSpecials.Active) -> DotPropInstance:
 	if props.world_count() >= config.prop_budget:
-		# Silently, and on purpose. The budget is a ceiling on the physics rather than a
+		# Quietly, and on purpose. The budget is a ceiling on the physics rather than a
 		# rule of the game, and an operator who set it low should get a quieter cannon
-		# rather than a line of warnings once a second.
+		# rather than a line of warnings once a second — so it is said once, on the edge,
+		# at INFO: the one person who can act on it is whoever tuned the budget.
+		if not _held_for_budget:
+			_held_for_budget = true
+			DotLog.info(CHANNEL, "the cannon is holding fire at the prop budget", {
+				"budget": config.prop_budget, "shots": shots_fired,
+			})
+
 		return null
+
+	if _held_for_budget:
+		_held_for_budget = false
+		DotLog.debug(CHANNEL, "the cannon is firing again", {"in_the_world": props.world_count()})
 
 	var tier := _pick_tier(elapsed, active)
 	var prop_id := _pick_prop(tier)
 
 	if prop_id == &"":
+		_say_nothing_to_fire(tier)
 		return null
 
 	var from := arena.muzzle()
@@ -173,6 +198,7 @@ func drop(at: Vector3, inherited: Vector3, tier: int) -> DotPropInstance:
 	var prop_id := _pick_prop(clampi(tier, 1, ScContent.TIERS))
 
 	if prop_id == &"":
+		_say_nothing_to_fire(tier)
 		return null
 
 	return _put_up(prop_id, at, inherited, tier)
@@ -190,6 +216,14 @@ func _put_up(
 	var prop := props.spawn(prop_id, ScContent.WORLD_OWNER, from, spin)
 
 	if prop == null:
+		# Once a round: the spawner has its own reasons and logs them on its own channel,
+		# and what this adds is that the cannon is the thing going quiet because of it.
+		if not _said_refused:
+			_said_refused = true
+			DotLog.warn(CHANNEL, "the prop spawner refused a shot; the cannon fires what it can", {
+				"prop": String(prop_id), "tier": tier,
+			})
+
 		return null
 
 	var body := prop.body()
@@ -267,6 +301,19 @@ func _pick_tier(elapsed: float, active: ScSpecials.Active) -> int:
 
 	var index := stream.next_weighted(weights)
 	return tiers[clampi(index, 0, tiers.size() - 1)]
+
+
+## A cannon with a catalogue that has nothing in the tier asked for or below it is a quiet
+## cannon, and a server whose operator narrowed the catalogue should hear that once a round
+## rather than find out from players standing still for two minutes.
+func _say_nothing_to_fire(tier: int) -> void:
+	if _said_nothing_to_fire:
+		return
+
+	_said_nothing_to_fire = true
+	DotLog.warn(CHANNEL, "the prop catalogue has nothing the cannon can fire", {
+		"tier": tier, "catalogue": props.catalogue != null if props != null else false,
+	})
 
 
 ## One prop id from a tier, or an empty name if the catalogue has none.
