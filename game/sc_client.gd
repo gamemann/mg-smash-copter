@@ -628,7 +628,7 @@ func _drive_view_model(command: DotFpsCommand) -> void:
 
 
 func _process(delta: float) -> void:
-	present_beacons(delta)
+	var _shown := present_frame(net, game, player, not third_person, delta)
 
 	if camera == null or player == null:
 		return
@@ -680,37 +680,81 @@ func _process(delta: float) -> void:
 		game.effects.advance(delta)
 
 
-## Draws every beaconed player's marker, this client's own included. Returns how many pinged
-## this frame, for a check.
+## Everything a frame draws that a tick does not, in this order: the netcode's
+## interpolation, then every player's body, then every beacon. Returns how many bodies are
+## shown. Static so the net suite drives exactly this and not a copy of it.
 ##
-## [b]Before the camera guard in [method _process], because a client that has not been handed
-## its own player yet — a spectator, a joiner mid-round — can still see and hear somebody
-## else's beacon.[/b] Here and not in the world, because the world also runs on a dedicated
-## server, which draws nothing.
-func present_beacons(delta: float) -> int:
-	if game == null:
+## [b]The interpolation was never called in this game, and a comment here said it was.[/b]
+## `present_beacons`, which this replaces, read a remote player's node on the grounds that
+## "everybody else's node is written by the interpolator once a frame already" — and nothing
+## anywhere called `DotNetManager.interpolate_frame`, so nothing wrote it. The
+## `_net_interpolated` hooks on `ScPlayerNet`, `ScPropNet` (so `ScCopterNet`) and `ScPlatformNet` were written,
+## documented and reached by nothing, and every remote player, prop, chopper and the lean of
+## every platform moved only when a snapshot landed — the render-jitter class, paid for in
+## this family's fourth game. The other half was that a remote player had no body to move
+## ([ScFigure]).
+##
+## [param first_person] is whether [param own]'s camera is behind their eyes, which is what
+## hides their own body. [param alpha] is the fraction through the current tick; -1 derives it
+## from the engine, which is what a real frame wants. A suite passes it, because a suite's
+## frames are not an engine's.
+static func present_frame(
+	p_net: DotNetManager,
+	p_game: ScGame,
+	own: ScPlayer,
+	first_person: bool,
+	delta: float,
+	alpha: float = -1.0
+) -> int:
+	var networked := p_net != null and p_net.is_running()
+
+	if networked:
+		p_net.interpolate_frame(alpha)
+
+	if p_game == null:
 		return 0
 
-	var pinged := 0
+	var shown := 0
 
-	for key: StringName in game.players:
-		var body: ScPlayer = game.players[key]
+	for key: StringName in p_game.players:
+		var body: ScPlayer = p_game.players[key]
 
-		if body == null or not is_instance_valid(body):
+		if body == null or not is_instance_valid(body) or not body.is_inside_tree():
 			continue
 
-		var own := body == player
-		# The local player's drawn position is between the last two ticks, as the camera's
-		# is; everybody else's node is written by the interpolator once a frame already.
-		var at := body.global_position
+		var mine := body == own
+		var at := drawn_position(body, networked and not mine)
+		var team := p_game.team_of(key)
+		var colour := Color.WHITE
 
-		if own and not body.riding:
-			at = body.controller.render_state().position
+		if team >= 1 and team <= ScGame.TEAM_COLOURS.size():
+			colour = ScGame.TEAM_COLOURS[team - 1]
 
-		if body.present_beacon(delta, at, own):
-			pinged += 1
+		if body.present_body(mine and first_person, at, colour):
+			shown += 1
 
-	return pinged
+		# Every player's beacon, this client's own included — somebody who has been beaconed
+		# sees their ring and hears their ping too. After the interpolation, so a ring is
+		# placed where this frame draws them rather than where the last one did.
+		var _pinged := body.present_beacon(delta, at, mine)
+
+	return shown
+
+
+## Where this frame draws [param body].
+##
+## [b]Two sources, and which one is not a detail.[/b] A player somebody else simulates — any
+## [param remote] player on a connected client — is placed by the interpolator, which writes
+## their node once a frame; their controller never ticks here, so its render state is a blend
+## of two ticks that never happened. A player THIS process simulates — the local player, and
+## every offline stand-in — has a node that moves once a tick, and `render_state` is the
+## blend between the last two, which is what the camera is drawn from too. Not while riding:
+## a rider's controller is not simulated, and the machine is what is drawn.
+static func drawn_position(body: ScPlayer, remote: bool) -> Vector3:
+	if remote or body.riding or body.controller == null:
+		return body.global_position
+
+	return body.controller.render_state().position
 
 
 func _unhandled_input(event: InputEvent) -> void:

@@ -5,6 +5,7 @@ const ScNetBridge := preload("../game/net/sc_net_bridge.gd")
 const ScNetCommand := preload("../game/net/sc_net_command.gd")
 const ScPlatformNet := preload("../game/net/sc_platform_net.gd")
 
+const ScClient := preload("../game/sc_client.gd")
 const ScConfig := preload("../game/sc_config.gd")
 const ScContent := preload("../game/sc_content.gd")
 const ScGame := preload("../game/sc_game.gd")
@@ -39,12 +40,20 @@ const ScSpecials := preload("../game/sc_specials.gd")
 ## real client is a separate program with its own export. Make them disagree, and let HELLO
 ## and LAYOUT correct it.
 
-const SECTIONS := 15
-const CHECKS := 145
+const SECTIONS := 16
+const CHECKS := 161
 
 ## Who the client is, on both ends.
 const CLIENT_PEER := 7
 const SESSION := 42
+
+## Somebody else, on their own peer. See `_test_somebody_else_is_drawn`.
+const OTHER_PEER := 8
+const OTHER_SESSION := 43
+
+## Frames the client draws between two ticks: a screen faster than the tick, as nearly every
+## screen is. The interpolation fraction only matters between ticks.
+const FRAMES_PER_TICK := 4
 
 const SNAPSHOT_RATE := 30
 
@@ -111,6 +120,7 @@ func _run() -> void:
 		await _test_a_platform_collapses_across_the_wire()
 		await _test_props_arrive()
 		await _test_moving()
+		await _test_somebody_else_is_drawn()
 		await _test_the_phases()
 		await _test_a_weapon_crosses()
 		await _test_a_special_is_announced()
@@ -850,6 +860,232 @@ func _test_moving() -> void:
 		"a button the client holds reaches the server"
 	)
 
+	_finished()
+
+
+# --- Somebody else, drawn ---------------------------------------------------
+
+## A second person on their own peer, as this client draws them.
+##
+## [b]Nothing drew another player on a connected client until 2026-09-24,[/b] and nothing
+## called `DotNetManager.interpolate_frame` either, so what a remote player's node did was
+## step at the snapshot rate towards a body that did not exist. Every check here goes
+## through `ScClient.present_frame`, the function the real client's `_process` calls, at
+## FRAMES_PER_TICK frames a tick with the fraction a renderer would pass.
+func _test_somebody_else_is_drawn() -> void:
+	_section("somebody else is drawn, where they are, every frame")
+
+	var seated := _server_bridge.add_player(OTHER_PEER, OTHER_SESSION, "Bea")
+	_check(seated.ok, "a second player joins on their own peer")
+	await _steps(8)
+
+	var key := ScNetBridge.player_key(OTHER_SESSION)
+	var theirs: ScPlayer = _client_game.players.get(key)
+	var server_theirs: ScPlayer = _server_game.players.get(key)
+	var mine: ScPlayer = _client_game.players.get(ScNetBridge.player_key(SESSION))
+
+	if theirs == null or server_theirs == null or mine == null:
+		_check(false, "the client knows them", "theirs %s, server %s, mine %s" % [
+			str(theirs != null), str(server_theirs != null), str(mine != null)
+		])
+		_finished()
+		return
+
+	var shown := ScClient.present_frame(_client_net, _client_game, mine, true, 1.0 / 60.0, 0.0)
+	_check(
+		theirs.figure != null and theirs.figure.visible and theirs.figure.from_art,
+		"the client draws a body for them, from the Kenney art",
+		str(theirs.describe().get("figure", {}))
+	)
+	_check(
+		mine.figure == null or not mine.figure.visible,
+		"and none round its own first-person camera"
+	)
+	# The stand-in is the third: a bot on the server is somebody else here like anybody.
+	_check(shown == _client_game.players.size() - 1, "so everybody but this client is drawn",
+		"%d of %d" % [shown, _client_game.players.size()])
+
+	var _tp := ScClient.present_frame(_client_net, _client_game, mine, false, 1.0 / 60.0, 0.0)
+	var mine_in_tp := mine.figure != null and mine.figure.visible
+	var _fp := ScClient.present_frame(_client_net, _client_game, mine, true, 1.0 / 60.0, 0.0)
+	_check(
+		mine_in_tp and not mine.figure.visible,
+		"in third person its own body is drawn, and back in first it is gone again"
+	)
+
+	# Running across a platform along -X (a yaw of -90 in this controller), from near one
+	# edge to past the middle — a second at full speed, which on a 10.5 m deck is most of the
+	# way across. Put there first, the way the game puts anybody, so the run stays on it.
+	# A STANDING deck: an earlier section collapsed one, and a player put on that is a
+	# player falling forty metres with a slightly different start.
+	var deck = null
+	for index in range(_server_game.platforms.count()):
+		var candidate = _server_game.platforms.deck_at(index)
+		if candidate != null and candidate.is_standing():
+			deck = candidate
+			break
+	server_theirs.place_at(deck.centre + Vector3(4.5, 1.2, 0.0), -90.0)
+	await _steps(16)
+
+	var bea_net: Variant = _server_bridge._behaviours.get(OTHER_SESSION)
+	var run := DotFpsCommand.new()
+	run.move = Vector2(0.0, 1.0)
+	run.yaw = -90.0
+	(bea_net as Object).set(&"last_move", run)
+
+	var server_track: Array[Vector3] = []
+	var drawn: Array[Vector3] = []
+	var clips: Array[StringName] = []
+
+	for i in range(64):
+		await _step()
+		server_track.append(server_theirs.controller.state.position)
+
+		for f in range(FRAMES_PER_TICK):
+			var _n := ScClient.present_frame(
+				_client_net, _client_game, mine, true, 1.0 / 60.0,
+				float(f) / float(FRAMES_PER_TICK)
+			)
+			if i >= 20:
+				drawn.append(theirs.figure.global_position)
+		clips.append(theirs.figure.clip)
+
+	(bea_net as Object).set(&"last_move", DotFpsCommand.new())
+
+	var ran := server_track[server_track.size() - 1].distance_to(server_track[0])
+	_check(
+		ran > 3.0 and server_theirs.is_alive() and server_track[server_track.size() - 1].y > 30.0,
+		"the server runs them across the deck, and they stay on it",
+		"%.2f m, ending at %s" % [ran, str(server_track[server_track.size() - 1].snapped(Vector3.ONE * 0.01))]
+	)
+
+	# On the path: every frame within a hand of SOME position the server really had them at.
+	# Not the latest, because a remote player is drawn an interpolation delay in the past on
+	# purpose; the nearest point on the server's own track is the fair test.
+	var worst := 0.0
+	for at in drawn:
+		var nearest := INF
+		for p in server_track:
+			nearest = minf(nearest, at.distance_to(p))
+		worst = maxf(worst, nearest)
+
+	_check(
+		not drawn.is_empty() and worst < 0.25,
+		"every frame draws the body on the path the server ran them along",
+		"worst %.3f m off it, over %d frames" % [worst, drawn.size()]
+	)
+
+	var last: Vector3 = drawn[drawn.size() - 1] if not drawn.is_empty() else Vector3.ZERO
+	_check(
+		last.distance_to(Vector3.ZERO) > 10.0,
+		"up on the field rather than at the world origin, forty metres below it",
+		"last drawn %s" % str(last.snapped(Vector3.ONE * 0.01))
+	)
+
+	# Smoothness: each frame should move the body by about what the frame before it did. A
+	# client that draws only when a snapshot lands moves it on one frame in several and not
+	# at all on the rest. [b]Measured against the server's own run[/b], because the run is
+	# not steady here: a platform leans toward whoever is on it and the deck's surface moves
+	# under them, and the server's per-tick step halves in a single tick at one point of this
+	# run. A drawn body may change its pace as sharply as the server's did, and no more.
+	var mean := 0.0
+	var steps: Array[float] = []
+	for j in range(1, drawn.size()):
+		var d := drawn[j].distance_to(drawn[j - 1])
+		steps.append(d)
+		mean += d
+	mean /= float(maxi(steps.size(), 1))
+
+	var jerk := 0.0
+	for j in range(1, steps.size()):
+		jerk = maxf(jerk, absf(steps[j] - steps[j - 1]))
+
+	var server_jerk := 0.0
+	for t in range(2, server_track.size()):
+		var now := server_track[t].distance_to(server_track[t - 1])
+		var before := server_track[t - 1].distance_to(server_track[t - 2])
+		server_jerk = maxf(server_jerk, absf(now - before) / float(FRAMES_PER_TICK))
+
+	_check(
+		mean > 0.001 and jerk <= server_jerk + mean * 0.25,
+		"and it moves by an even step on every frame, not in snapshot-sized jumps",
+		"per frame %.4f m mean; largest change between two frames %.4f, the server's own %.4f"
+			% [mean, jerk, server_jerk]
+	)
+	_check(
+		absf(wrapf(theirs.figure.rotation.y - deg_to_rad(-90.0), -PI, PI)) < 0.05,
+		"facing the way the server says they are looking",
+		"%.1f deg" % rad_to_deg(theirs.figure.rotation.y)
+	)
+	_check(
+		clips[clips.size() - 1] == &"sprint",
+		"and running, rather than sliding across in a standing pose",
+		String(clips[clips.size() - 1])
+	)
+
+	# In the chopper: the server seats them, and the client draws the machine, not a person
+	# frozen on the pad they climbed in from.
+	_server_game._set_riding(key, true)
+	await _steps(8)
+	var _seat := ScClient.present_frame(_client_net, _client_game, mine, true, 1.0 / 60.0, 0.0)
+	_check(
+		theirs.riding and not theirs.figure.visible,
+		"a pilot is drawn as the chopper, not as a body left on the pad",
+		"riding %s, visible %s" % [str(theirs.riding), str(theirs.figure.visible)]
+	)
+	_server_game._set_riding(key, false, server_theirs.controller.state.position)
+	await _steps(8)
+
+	# The showdown's teleport: the handover's own call, with the handover's own corner. Sixty
+	# metres in one tick, arriving through the ordinary snapshot path.
+	var team_index := _server_game.team_of(key) - 1
+	var teams := _server_game.config.team_count
+	var corner := _server_game.arena.showdown_spawn(team_index, teams, 0, 1)
+	var corner_yaw := _server_game.arena.showdown_yaw(team_index, teams)
+	var left_from := server_theirs.controller.state.position
+	server_theirs.place_at(corner, corner_yaw)
+
+	var strays := 0
+	for _i in range(24):
+		await _step()
+		for f in range(FRAMES_PER_TICK):
+			var _n := ScClient.present_frame(
+				_client_net, _client_game, mine, true, 1.0 / 60.0,
+				float(f) / float(FRAMES_PER_TICK)
+			)
+			var at := theirs.figure.global_position
+			if at.distance_to(left_from) > 2.0 and at.distance_to(corner) > 2.0:
+				strays += 1
+
+	# Against where the SERVER has them, which is the corner plus whatever settling onto the
+	# pad did, and the way the server has them facing — which after the teleport is the yaw
+	# their own next command carried, as it would be for any peer.
+	var landed := server_theirs.controller.state.position
+	var arrived := theirs.figure.global_position.distance_to(landed)
+	_check(
+		theirs.figure.visible and arrived < 0.5 and landed.distance_to(corner) < 2.0,
+		"after the showdown teleport the body is drawn in their corner",
+		"%.2f m from where the server has them, %.2f m from the corner" % [
+			arrived, landed.distance_to(corner)
+		]
+	)
+	_check(
+		absf(wrapf(theirs.figure.rotation.y - deg_to_rad(server_theirs.controller.state.yaw), -PI, PI)) < 0.05,
+		"facing the way the server has them facing",
+		"%.1f vs %.1f deg" % [
+			rad_to_deg(theirs.figure.rotation.y), server_theirs.controller.state.yaw
+		]
+	)
+	_check(
+		strays == 0,
+		"and never drawn in the sky between, sweeping sixty metres",
+		"%d frames between the two" % strays
+	)
+
+	_server_bridge.remove_player(OTHER_SESSION)
+	_exchange()
+	await _steps(2)
+	_check(not _client_game.players.has(key), "and they leave again, so nothing after this sees them")
 	_finished()
 
 

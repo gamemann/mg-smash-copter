@@ -77,6 +77,13 @@ var net_blind: bool = false
 ## `ScPlayer.beacon`. Everybody's.
 var net_beacon: bool = false
 
+## `ScPlayer.warps`, four bits of it: how many times the server has put this player
+## somewhere rather than moved them there. See [method _forget_the_path].
+var net_warp: int = 0
+
+## The last [member net_warp] this mirror acted on.
+var _seen_warp: int = -1
+
 ## What this watcher last saw of that counter, so a wrap is read as uses rather than as a
 ## negative. One integer per watched player, which is what lets `ZeeWeaponNet` keep none.
 var _seen_fire_seq: int = 0
@@ -136,6 +143,7 @@ func _register_net_vars() -> void:
 	# set `always_relevant` back to false would take the player out of everybody's snapshot.
 	var _blind := replicate(&"net_blind", DotNetVar.Type.BOOL).to_owner_only()
 	replicate(&"net_beacon", DotNetVar.Type.BOOL)
+	replicate(&"net_warp", DotNetVar.Type.UINT).bits(4)
 
 
 func _net_apply_input(input: DotNetInput, _tick: int) -> void:
@@ -189,6 +197,7 @@ func pull() -> void:
 	net_riding = player.riding
 	net_blind = player.blinded
 	net_beacon = player.beacon
+	net_warp = player.warps & 0xF
 
 	# [b]After the arsenal has simulated, which on this end it has: the whole world ticks
 	# before anything is pulled.[/b] A rig that does not exist yet — which is every player
@@ -205,6 +214,7 @@ func _net_state_applied(tick: int) -> void:
 		return
 
 	last_state_tick = tick
+	_forget_the_path()
 	DotFpsNetSync.push(self, player.controller.state)
 	_adopt()
 
@@ -220,6 +230,37 @@ func _net_state_applied(tick: int) -> void:
 	# chopper fly away from inside their own head.
 	if identity == null or not identity.is_predicted() or player.riding:
 		player.global_position = player.controller.state.position
+
+
+## A teleport is not a movement, so the interpolator must not draw one.
+##
+## [b]The showdown moves every survivor sixty metres in one tick, and a watcher saw them fly
+## there.[/b] The interpolator blends between the two snapshots either side of the render
+## time, and when those are "on a platform" and "in a corner of the sky" the blend is a body
+## sweeping across the map for a snapshot interval — seven frames of it at four frames a
+## tick, measured by `headless_net`. Every round start is the same, since laying the field
+## out again puts everybody back on a deck with the same call.
+##
+## So the server counts the times it PUT this player somewhere (`ScPlayer.place_at`), the
+## count replicates, and a mirror that sees it change drops the interpolator's track for this
+## entity before the new snapshot is added to it. A track with one sample answers with that
+## sample, so the body appears in its corner, one render delay early, rather than crossing
+## the sky to get there. Here, before the push, because this hook runs inside the snapshot
+## read and the manager adds the snapshot's values to the track just after it.
+##
+## Not on the predicted entity: nothing interpolates that, and its own camera is moved by
+## the prediction's rewind.
+func _forget_the_path() -> void:
+	if identity == null or identity.is_authoritative or identity.is_predicted():
+		_seen_warp = net_warp
+		return
+
+	if _seen_warp >= 0 and net_warp != _seen_warp and bridge != null:
+		var manager: Variant = bridge.get(&"net")
+		if manager is DotNetManager and (manager as DotNetManager).interpolator != null:
+			(manager as DotNetManager).interpolator.forget(identity.net_id)
+
+	_seen_warp = net_warp
 
 
 ## Every frame on a remote player. Without this the interpolator's work sits in a property

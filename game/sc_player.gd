@@ -2,6 +2,7 @@ extends CharacterBody3D
 
 const ScBeacon := preload("sc_beacon.gd")
 const ScConfig := preload("sc_config.gd")
+const ScFigure := preload("sc_figure.gd")
 const ScPlatforms := preload("sc_platforms.gd")
 const ScSpecials := preload("sc_specials.gd")
 
@@ -86,6 +87,11 @@ var riding: bool = false
 ## The entity id dot-combat and dot-entity know them by.
 var entity_id: int = 0
 
+## How many times [method place_at] has put them somewhere, rather than moved them there.
+## Replicated (`ScPlayerNet.net_warp`), so a watcher's interpolator draws a teleport as one
+## instead of as a flight across the map.
+var warps: int = 0
+
 ## Which platform they were last standing on, or -1. Reported rather than kept, because it
 ## is the one number that says the carry actually happened.
 var standing_on: int = -1
@@ -122,6 +128,10 @@ var beacon: bool = false
 
 ## The marker [member beacon] draws, while it does. Client side.
 var beacon_marker: ScBeacon = null
+
+## What other people see this player as. Client side: built and shown by
+## [method present_body], never on a server, which draws nothing.
+var figure: ScFigure = null
 
 var tick_rate: int = 64:
 	set(value):
@@ -420,6 +430,7 @@ func set_riding(value: bool) -> void:
 ## moves everybody sixty metres in one tick; a player who arrived still carrying the fall
 ## they were in the middle of would arrive already dying.
 func place_at(at: Vector3, yaw_degrees: float) -> void:
+	warps += 1
 	global_position = at
 
 	# Through `teleport` rather than by writing the state, because it also resets the tick
@@ -496,6 +507,61 @@ func present_beacon(delta: float, at: Vector3, local_view: bool) -> bool:
 	return beacon_marker.advance(delta)
 
 
+## Draws this player's body for one frame at [param at], the position this frame draws them.
+## Client side, once a frame, from `ScClient.present_frame`. Returns whether it is shown.
+##
+## [b]Shown for everybody except three people[/b], and each is a rule rather than a saving:
+##
+## - [b]the one the camera belongs to, in first person[/b] ([param own_view]) — a body drawn
+##   round a camera is the inside of somebody's head. In third person it is the one body the
+##   player most needs, because it is what tells them where on the platform they are;
+## - [b]a pilot[/b], who is drawn AS the chopper. `ride.carry_rider_nodes` is off, so nothing
+##   moves a rider's node or state while they fly — see [method set_riding] — and a body
+##   left standing would be somebody frozen on the pad they climbed in from for the rest of
+##   the round, while the machine they are actually flying goes somewhere else;
+## - [b]somebody who is out[/b]. A faller is out until the next round, and a body standing
+##   where they went over the edge would be a player nobody can shoot.
+##
+## [param team_colour] is their side's, on the torso; see [ScFigure].
+func present_body(own_view: bool, at: Vector3, team_colour: Color) -> bool:
+	var shown := not own_view and not riding and is_alive()
+
+	if figure == null:
+		# Built lazily and only once there is something to show, so a client never builds a
+		# figure for its own first-person player.
+		if not shown:
+			return false
+
+		figure = ScFigure.new()
+		figure.name = "Figure"
+		add_child(figure)
+
+	if figure.atlas == "" or not figure.team_colour.is_equal_approx(team_colour):
+		# Rebuilt on a side change, which a moderator's `team` does between rounds.
+		var height := controller.tunables.stand_height \
+			if controller != null and controller.tunables != null else 1.8
+		figure.build(height, _atlas(), team_colour)
+
+	figure.visible = shown
+
+	if shown and controller != null:
+		var velocity := controller.state.velocity
+		figure.pose(
+			at,
+			deg_to_rad(controller.state.yaw),
+			Vector2(velocity.x, velocity.z).length()
+		)
+
+	return shown
+
+
+## Which atlas this player wears, from their id rather than a random draw, so every client
+## dresses the same person the same way.
+func _atlas() -> String:
+	var index := int(hash(String(player_id)) & 0x7fffffff) % ScFigure.ATLASES.size()
+	return str(ScFigure.ATLASES[index])
+
+
 func describe() -> Dictionary:
 	return {
 		"id": String(player_id),
@@ -508,4 +574,5 @@ func describe() -> Dictionary:
 		"armed": weapons != null,
 		"blinded": blinded,
 		"beacon": beacon,
+		"figure": figure.describe() if figure != null else {},
 	}
