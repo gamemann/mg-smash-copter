@@ -59,7 +59,7 @@ assets/kenney/      eight CC0 models and two atlases
 assets/{blaster-kit,melee,arms}/  the weapon pack's own art, vendored
 textures/prototype/ six CC0 prototype textures, one per role
 scenes/             sc_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (149), dedicated (66), headless_net (161)
+examples/           headless_run (150), dedicated (66), headless_net (161)
 tools/              shot.gd/.tscn/.sh — render a frame and look at it; any --sc-* is config
 ```
 
@@ -161,7 +161,7 @@ Every one of these was found by running the game or by looking at a picture of i
 
 - **Every cannon shot on The Spine went up into a bridge.** The tube stands in the middle of the field with its muzzle three metres under the decks, and on five columns and two rows the middle column's bridge is directly on top of it — forty shots in forty hit its underside and never cleared the decks, on a layout drawn one round in nine. No check fired a shot on any layout but the first. The middle bridge is not built now (`_has_bridge`), `ScArena.THROAT_CLEARANCE` is the 2.5 m a tumbling monolith sweeps, and the throat section measures every layout against it and then fires eight all-tier shots at each. Pulling the chequerboard's rows together put its middle platform 1.05 m from the same line and one shot in twenty into its underside, which is why that field is moved half a row over: the tube stands in the hole where (2,1) would be.
 
-- **A survivor could not walk off their own corner.** The catwalks were given kerbs on their long sides only, so that a junction would not be a step — and the pad's and the ring's own kerbs ran straight across those same junctions from the other side. dot-player-controller's step-up does not take a 0.34 m kerb 0.6 m deep at a walk or a run, whatever `step_height` says, so a runner stopped dead at their pad's edge and again at the ring's. "A pad is edged on four sides and a catwalk on two" counted the kerbs and passed. `_build_kerb` cuts an opening wherever a catwalk's strip crosses an edge, square on or oblique; the check counts SIDES now, and the showdown walk is what fails with the openings taken out.
+- **A survivor could not walk off their own corner.** The catwalks were given kerbs on their long sides only, so that a junction would not be a step — and the pad's and the ring's own kerbs ran straight across those same junctions from the other side. dot-player-controller's step-up does not take a 0.34 m kerb 0.6 m deep at a walk or a run, whatever `step_height` says, so a runner stopped dead at their pad's edge and again at the ring's. "A pad is edged on four sides and a catwalk on two" counted the kerbs and passed. `_build_kerb` cuts an opening wherever a catwalk's strip crosses an edge, square on or oblique; the check counts SIDES now, and the showdown walk is what fails with the openings taken out. **The step was fixed in dot-player-controller on 2026-09-24 (2e6d930)** and the openings stay, because a junction with no step is still the better junction; the showdown walk also closes the pad's kerb across its catwalk and walks over it with the brake held (0.34 m, climbed at 2.7 m/s). Measured while arming it: the step now climbs a 0.7 m kerb at a walk against a `step_height` of 0.45, and refuses 1.0 — the addon's, and in the Queue.
 
 - **The camera moved only on a tick.** It hangs off the player's node, which the tick writes, so at 64 ticks against 144 frames 160 frames in 288 did not move at all while the player ran. `_process` draws the rig from `DotFpsController.render_state` now (per-frame speed variation 112% to 3%, measured), and `place_at` goes through `teleport` so the handover does not sweep the view across the map for a frame.
 
@@ -257,7 +257,7 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 23 sections, 149 checks
+godot --headless --path . res://examples/headless_run.tscn   # 23 sections, 150 checks
 godot --headless --path . res://examples/dedicated.tscn      # 10 sections, 66 checks
 godot --headless --path . res://examples/headless_net.tscn   # 16 sections, 161 checks
 tools/shot.sh --view=field

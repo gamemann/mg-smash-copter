@@ -39,7 +39,7 @@ const SECTIONS := 23
 ## checks that already ran still print ok, the ones after it never happen, and the section
 ## counter is satisfied because the section announced itself on the way in. dot-settings
 ## reported "8 sections, 63 passed, 0 failed" and exited 0 with eight checks missing.
-const CHECKS := 149
+const CHECKS := 150
 
 const TICK_RATE := 64
 const TICK := 1.0 / float(TICK_RATE)
@@ -1299,6 +1299,54 @@ func _test_the_showdown_walk() -> void:
 
 		await _dispose(game)
 
+	# [b]And over a kerb, at walking pace.[/b] The openings above were cut on 2026-09-23
+	# because step-up refused this game's 0.34 m kerb 0.6 m deep at any speed, whatever
+	# `step_height` (0.45) said. dot-player-controller 2e6d930 fixed the step; this closes
+	# the pad's kerb across its catwalk again and walks over it with the brake held, so a
+	# regression in the step shows up here rather than as a survivor stuck on their pad.
+	# The height reached is in the detail, for the addon's [kerb-pop-1] (a fast body is
+	# thrown well over the kerb).
+	var closed := await _world(func(c: ScConfig) -> void:
+		c.team_count = 2
+		c.cannon_enabled = false
+		c.specials_enabled = false
+	)
+	var pad := closed.arena.get_node(^"Showdown/Pad0") as StaticBody3D
+	var none: Array[Vector2] = []
+	closed.arena._build_kerb(pad, Vector2(closed.config.corner_size, closed.config.corner_size),
+		true, none)
+	await _physics_frame()
+
+	var home := closed.arena.corner_point(0, 2)
+	var facing := closed.arena.showdown_yaw(0, 2)
+	var stepper := closed.add_player(&"stepper", "Stepper", 1)
+	stepper.place_at(home + Vector3.UP * 0.2, facing)
+	var highest := -INF
+	var over := false
+
+	for _i in range(int(8.0 * TICK_RATE)):
+		var command := DotFpsCommand.new()
+		command.yaw = facing
+		command.move = Vector2(0.0, 1.0)
+		command.set_button(DotFpsCommand.BUTTON_WALK, true)
+		stepper.controller.apply_command(command)
+		closed.simulate(TICK)
+		await _physics_frame()
+
+		var now := stepper.controller.state.position
+		highest = maxf(highest, now.y - home.y)
+
+		# Two metres past the pad's edge is on the catwalk.
+		if Vector2(now.x - home.x, now.z - home.z).length() > closed.config.corner_size * 0.5 + 2.0:
+			over = true
+			break
+
+	_check(over and stepper.is_alive() and highest < ScArena.CORNER_LIP + 0.3,
+		"a survivor walks over their pad's kerb onto the catwalk",
+		"over %s, highest %.2f m over the pad against a %.2f m kerb" % [
+			over, highest, ScArena.CORNER_LIP])
+
+	await _dispose(closed)
 	_finished()
 
 
