@@ -21,7 +21,7 @@ const ScPlayer := preload("../game/sc_player.gd")
 ## and those are what this is about.
 
 const SECTIONS := 9
-const CHECKS := 54
+const CHECKS := 55
 
 ## The port this test listens on. Nothing else on a developer's machine is likely to be
 ## holding it, and a boot that failed on a busy 27015 would look like the module being
@@ -349,18 +349,48 @@ func _test_the_tunables() -> void:
 	_finished()
 
 
+## Counts the engine's own errors while installed. Those go to stderr and change no exit
+## code, so without this a green run can print ten of them — which this section did, one
+## `Condition "!is_inside_tree()"` per deck of the boot field, every round.
+class EngineErrors extends Logger:
+	var _lock := Mutex.new()
+	var _seen := PackedStringArray()
+
+	func _log_error(
+		_function: String, _file: String, _line: int, code: String, _rationale: String,
+		_editor_notify: bool, _error_type: int, _script_backtraces: Array[ScriptBacktrace]
+	) -> void:
+		_lock.lock()
+		_seen.append(code)
+		_lock.unlock()
+
+	func _log_message(_message: String, _error: bool) -> void:
+		pass
+
+	func seen() -> PackedStringArray:
+		_lock.lock()
+		var out := _seen.duplicate()
+		_lock.unlock()
+		return out
+
+
 func _test_a_round_runs() -> void:
 	_section("a round, on a real server")
 
 	var module := _module()
+	var errors := EngineErrors.new()
+	OS.add_logger(errors)
 
 	if module == null:
 		for what in [
 			"the round starts", "it reaches the corners", "and the showdown",
 			"the cannon threw something", "and the field took damage",
 			"and lag compensation keeps nothing for what the server let go",
+			"and the engine reported no error",
 		]:
 			_check(false, what)
+
+		OS.remove_logger(errors)
 
 		_finished()
 		return
@@ -426,6 +456,16 @@ func _test_a_round_runs() -> void:
 
 	_check(orphans.is_empty(), "and lag compensation keeps nothing for what the server let go",
 		"%d tracks, %d orphaned %s" % [net.history._tracks.size(), orphans.size(), str(orphans)])
+
+	# The same moment, seen from the log: the old decks are out of the tree and still
+	# registered for that one tick, and dot-net's history read their global basis. Fixed in
+	# dot-net (DotNetHistory skips an entity that is not in the world, as
+	# DotNetIdentity.world_position already did), because taking a node out between ticks
+	# is something the netcode has already agreed a game may do.
+	OS.remove_logger(errors)
+	var seen := errors.seen()
+	_check(seen.is_empty(), "and the engine reported no error",
+		"%d: %s" % [seen.size(), " | ".join(seen.slice(0, 3))])
 
 	_finished()
 
