@@ -628,6 +628,8 @@ func _drive_view_model(command: DotFpsCommand) -> void:
 
 
 func _process(delta: float) -> void:
+	present_beacons(delta)
+
 	if camera == null or player == null:
 		return
 
@@ -676,6 +678,39 @@ func _process(delta: float) -> void:
 	if game.effects != null:
 		game.effects.viewer_position = camera.global_position
 		game.effects.advance(delta)
+
+
+## Draws every beaconed player's marker, this client's own included. Returns how many pinged
+## this frame, for a check.
+##
+## [b]Before the camera guard in [method _process], because a client that has not been handed
+## its own player yet — a spectator, a joiner mid-round — can still see and hear somebody
+## else's beacon.[/b] Here and not in the world, because the world also runs on a dedicated
+## server, which draws nothing.
+func present_beacons(delta: float) -> int:
+	if game == null:
+		return 0
+
+	var pinged := 0
+
+	for key: StringName in game.players:
+		var body: ScPlayer = game.players[key]
+
+		if body == null or not is_instance_valid(body):
+			continue
+
+		var own := body == player
+		# The local player's drawn position is between the last two ticks, as the camera's
+		# is; everybody else's node is written by the interpolator once a frame already.
+		var at := body.global_position
+
+		if own and not body.riding:
+			at = body.controller.render_state().position
+
+		if body.present_beacon(delta, at, own):
+			pinged += 1
+
+	return pinged
 
 
 func _unhandled_input(event: InputEvent) -> void:

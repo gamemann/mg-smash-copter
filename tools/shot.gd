@@ -27,6 +27,8 @@ const ScLayouts := preload("../game/sc_layouts.gd")
 ## tools/shot.sh --view=copter    # the chopper, close
 ## tools/shot.sh --view=showdown  # the corners the round is finished in
 ## tools/shot.sh --view=jump      # the first jump the layout means, from behind the runner
+## tools/shot.sh --view=beacon    # an admin's beacon on a stand-in, from across the field
+## tools/shot.sh --view=blind     # the local player's own eyes, blinded, through the real HUD
 ## [/codeblock]
 
 const CHANNEL := "sc.shot"
@@ -60,7 +62,16 @@ func _run() -> void:
 
 	var game: ScGame = client.get("game")
 
-	if game != null and view != "eyes":
+	# The two admin marks go on through the flags the server would have set — offline, the
+	# client IS the server — and are then drawn by the client's own `_process`, which is the
+	# whole path a connected client takes after a snapshot has delivered them.
+	if game != null and view == "blind":
+		var me: Node = client.get("player")
+		if me != null:
+			me.set("blinded", true)
+		for _i in range(40):
+			await get_tree().process_frame
+	elif game != null and view != "eyes":
 		await _place_camera(game, view)
 
 	await RenderingServer.frame_post_draw
@@ -143,6 +154,22 @@ func _place_camera(game: ScGame, view: String) -> void:
 				var line := Vector3(to.x - from.x, 0.0, to.z - from.z).normalized()
 				camera.global_position = from - line * 4.0 + Vector3.UP * 3.2
 				camera.look_at(to + Vector3.UP * 0.5, Vector3.UP)
+		"beacon":
+			var marked := _beacon_a_stand_in(game)
+
+			if marked == null:
+				camera.global_position = Vector3(0.0, game.config.deck_height + 18.0, 42.0)
+				camera.look_at(Vector3(0.0, game.config.deck_height, 0.0), Vector3.UP)
+			else:
+				# Let the client draw it for a while, so the ripple is somewhere in its spread
+				# rather than always at the frame it started.
+				for _i in range(36):
+					await get_tree().process_frame
+				var at := marked.global_position
+				# Across the field and a little above deck height, which is how a player on
+				# another platform sees somebody — the column has to read from there.
+				camera.global_position = at + Vector3(-16.0, 7.0, 20.0)
+				camera.look_at(at + Vector3(0.0, 4.0, 0.0), Vector3.UP)
 		"showdown":
 			var middle := game.arena.showdown_centre()
 			camera.global_position = middle + Vector3(
@@ -194,6 +221,19 @@ func _lean_one(game: ScGame) -> void:
 		await get_tree().process_frame
 
 	print("leaned platform 0 by %.1f degrees toward +X" % rad_to_deg(deck.tilt()))
+
+
+## Turns a beacon on over the first stand-in that is up, and returns them.
+func _beacon_a_stand_in(game: ScGame) -> Node3D:
+	for key: StringName in game.players:
+		var body: Node3D = game.players[key]
+
+		if body != null and bool(body.get("is_bot")) and body.call("is_alive"):
+			body.set("beacon", true)
+			print("beaconed %s at %s" % [String(key), body.global_position])
+			return body
+
+	return null
 
 
 func _a_copter(game: ScGame) -> DotVehicleInstance:

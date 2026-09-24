@@ -6,6 +6,7 @@ const ScConfig := preload("../game/sc_config.gd")
 const ScContent := preload("../game/sc_content.gd")
 const ScCopter := preload("../game/sc_copter.gd")
 const ScGame := preload("../game/sc_game.gd")
+const ScHud := preload("../game/sc_hud.gd")
 const ScLayouts := preload("../game/sc_layouts.gd")
 const ScPlatforms := preload("../game/sc_platforms.gd")
 const ScPaths := preload("../game/sc_paths.gd")
@@ -30,7 +31,7 @@ const ScSpecials := preload("../game/sc_specials.gd")
 ## `set_physics_process(false)` goes on first and every section advances the world itself.
 
 ## Sections entered, against sections that ran to their last line.
-const SECTIONS := 20
+const SECTIONS := 21
 
 ## And the total this counter cannot be.
 ##
@@ -38,7 +39,7 @@ const SECTIONS := 20
 ## checks that already ran still print ok, the ones after it never happen, and the section
 ## counter is satisfied because the section announced itself on the way in. dot-settings
 ## reported "8 sections, 63 passed, 0 failed" and exited 0 with eight checks missing.
-const CHECKS := 131
+const CHECKS := 140
 
 const TICK_RATE := 64
 const TICK := 1.0 / float(TICK_RATE)
@@ -82,6 +83,7 @@ func _run() -> void:
 	await _test_the_throat()
 	await _test_the_showdown_walk()
 	await _test_the_zigzag()
+	await _test_blind_and_beacon_drawn()
 
 	for world in _worlds.duplicate():
 		await _dispose(world)
@@ -1568,6 +1570,89 @@ func _check(ok: bool, what: String, detail: String = "") -> void:
 	var line := "%s%s" % [what, "" if detail == "" else "  (%s)" % detail]
 	_failures.append(line)
 	print("  FAIL  %s" % line)
+
+
+## What an administrator's blind and beacon DRAW, which neither the net suite nor the
+## dedicated one can reach: they assert the flags, and this asserts what a client does with
+## them. Whether it looks right is `tools/shot.sh --view=beacon` and `--view=blind`.
+##
+## A headless viewport is 64 x 64, so "covers the viewport" is a weak claim here — but a
+## blind the size of nothing, or of a HUD inset by a margin, is still caught, and the check
+## was armed with the overlay anchored top-left at no size.
+func _test_blind_and_beacon_drawn() -> void:
+	_section("an admin's blind and beacon, drawn")
+
+	var game := await _world()
+	var me := game.add_player(&"me", "Me", 1)
+	var them := game.add_player(&"them", "Them", 2)
+
+	var hud := ScHud.new()
+	add_child(hud)
+	hud.bind(game, me)
+
+	me.blinded = true
+	for _i in range(30):
+		hud.present_blind(1.0 / 60.0)
+	_check(
+		is_equal_approx(hud.blind_overlay.modulate.a, 1.0) and hud.blind_overlay.visible,
+		"a blind fades the screen fully black within half a second",
+		"%.2f" % hud.blind_overlay.modulate.a
+	)
+	var screen := hud.get_viewport().get_visible_rect()
+	var covered := hud.blind_overlay.get_global_rect()
+	_check(
+		covered.encloses(screen) and covered.get_area() > 0.0,
+		"and covers the whole viewport, not a HUD-sized part of it",
+		"%s over %s" % [covered, screen]
+	)
+	_check(
+		hud.blind_overlay.get_index() == 0,
+		"under every number the HUD draws, which still say the round is going on"
+	)
+
+	me.blinded = false
+	for _i in range(30):
+		hud.present_blind(1.0 / 60.0)
+	_check(not hud.blind_overlay.visible, "and lifts when the flag does")
+
+	# The beacon, as the client presents it: once a frame at sixty frames a second for 2.9
+	# seconds — short of three, because sixty sixtieths summed in floats land ON a period
+	# boundary and the fourth ping would be a question about rounding. The promise is a
+	# ripple a SECOND: a marker that pinged on every frame would be 174 pings, and a check
+	# that asked only "does it ping" would still pass.
+	them.beacon = true
+	var pings := 0
+	for _i in range(174):
+		if them.present_beacon(1.0 / 60.0, them.global_position, false):
+			pings += 1
+	_check(pings == 3, "a beacon pings once a second, starting the moment it comes on",
+		"%d pings in 2.9 s" % pings)
+	_check(
+		them.beacon_marker != null and them.beacon_marker.column_shown(),
+		"and draws its column on somebody else's screen"
+	)
+
+	me.beacon = true
+	var _mine := me.present_beacon(1.0 / 60.0, me.global_position, true)
+	_check(
+		me.beacon_marker != null and not me.beacon_marker.column_shown(),
+		"but not on the beaconed player's own, where the camera is inside it"
+	)
+
+	them.beacon = false
+	var _gone := them.present_beacon(1.0 / 60.0, them.global_position, false)
+	_check(them.beacon_marker == null, "the marker goes when the flag does")
+
+	me.health.alive = false
+	var _out := me.present_beacon(1.0 / 60.0, me.global_position, true)
+	_check(
+		me.beacon_marker == null and me.beacon,
+		"and while they are out, though the flag waits for the next round"
+	)
+
+	hud.queue_free()
+	await _dispose(game)
+	_finished()
 
 
 ## A world, built and stepped by hand.

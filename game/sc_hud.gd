@@ -41,6 +41,27 @@ var _root: Control = null
 ## Seconds left of the big shouted line in the middle of the screen.
 var _shout_for: float = 0.0
 
+## An administrator's `blind`, over the world and under the HUD's numbers.
+##
+## [b]Under the numbers, on purpose.[/b] A blind takes the game away, not the player's
+## bearings: the clock, the phase and their own health still say the round is going on and
+## that they are in it, which is what makes it read as "an admin did this" rather than as a
+## client that stopped drawing.
+##
+## [b]But not under the tilt bar, which a blind hides.[/b] The bar is the floor under their
+## feet drawn as a number — in this game the one thing their eyes would have told them —
+## and a blind that left it would leave a player who can still balance by instrument.
+##
+## Black rather than white. A white screen at full brightness is a thing a player can be
+## hurt by in a dark room, and taking the picture away is the whole of the point.
+var blind_overlay: ColorRect = null
+
+## Seconds a blind takes to come down and to lift. Short, so it is unmistakably on, and not
+## instant, so it reads as something done to the screen rather than a frame dropped.
+const BLIND_FADE_SEC := 0.25
+
+const BLIND_COLOUR := Color(0.01, 0.01, 0.015)
+
 
 func bind(p_game: ScGame, p_player: ScPlayer) -> void:
 	game = p_game
@@ -62,6 +83,19 @@ func _build() -> void:
 	_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_root)
+
+	# First, so every widget added below draws over it. Full rect on `_root`, which is full
+	# rect on a CanvasLayer — so the whole viewport, with no safe-area inset between them to
+	# leave a frame of the world showing round the edge, which is what game-arena's first
+	# render of its own blind found. See [member blind_overlay].
+	blind_overlay = ColorRect.new()
+	blind_overlay.name = "Blind"
+	blind_overlay.color = BLIND_COLOUR
+	blind_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	blind_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	blind_overlay.modulate.a = 0.0
+	blind_overlay.visible = false
+	_root.add_child(blind_overlay)
 
 	var size := 22
 
@@ -180,6 +214,8 @@ func shout(text: String, seconds: float = 3.5) -> void:
 
 
 func _process(delta: float) -> void:
+	present_blind(delta)
+
 	if game == null or game.config == null or _root == null:
 		return
 
@@ -210,6 +246,27 @@ func _process(delta: float) -> void:
 			_shout.text = ""
 
 
+## Fades [member blind_overlay] toward whether the followed player is blinded.
+##
+## Read off [member player] rather than pushed by anybody, because the flag arrives in a
+## snapshot on a connected client and is set directly offline, and a HUD that had to be told
+## would need telling from two places. Public so a check can step it.
+func present_blind(delta: float) -> void:
+	if blind_overlay == null:
+		return
+
+	var want := 1.0 if is_blind() else 0.0
+	blind_overlay.modulate.a = move_toward(
+		blind_overlay.modulate.a, want, maxf(delta, 0.0) / BLIND_FADE_SEC
+	)
+	blind_overlay.visible = blind_overlay.modulate.a > 0.0
+
+
+## Whether the player this HUD follows is blinded.
+func is_blind() -> bool:
+	return player != null and is_instance_valid(player) and player.blinded
+
+
 func _phase_line() -> String:
 	if not game.sides_are_playable():
 		return "waiting for players"
@@ -237,7 +294,8 @@ func _draw_tilt() -> void:
 
 	var deck = game.platforms.deck_at(player.standing_on) if player != null and game.platforms != null else null
 
-	if deck == null:
+	# Hidden under a blind as well — see [member blind_overlay].
+	if deck == null or is_blind():
 		_tilt_back.visible = false
 		_tilt_fill.visible = false
 		return

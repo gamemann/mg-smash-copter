@@ -205,6 +205,12 @@ func _player_of(peer_id: int) -> ScPlayer:
 ## because weapons are handed out at the handover, one each, at random, and that draw is
 ## the second half's whole fairness. Anything that moves a body is refused while they fly
 ## the chopper — the chopper is what moves.
+##
+## [b]Blind and beacon are the two about a SCREEN rather than a body[/b], and each is one flag
+## on [ScPlayer] that `ScPlayerNet` replicates — the blind to its owner alone, the beacon to
+## everybody — and that the client draws: `ScHud` blacks the owner's screen out, `ScBeacon`
+## rings the player on every screen and pings. The server decides; nothing about either is a
+## client's to choose.
 func _mod_abilities() -> Dictionary:
 	return {
 		"noclip": func(id: StringName, args: Dictionary) -> DotResult:
@@ -249,6 +255,22 @@ func _mod_abilities() -> Dictionary:
 				return _mod_absent(id)
 			p.display_name = str(args["name"]).strip_edges().substr(0, 32)
 			return DotResult.success(p.display_name),
+		# The screen and nothing else, flying or not. A blinded player still moves, still
+		# loads the platform they are on and can still be hit; an admin who wants them to
+		# stop as well has freeze, and one verb that did both could not be used for only
+		# the first. On a slab on a pillar, a blind alone is already most of a punishment.
+		"blind": func(id: StringName, args: Dictionary) -> DotResult:
+			var p := _mod_player(id)
+			if p == null:
+				return _mod_absent(id)
+			p.blinded = bool(args["on"])
+			return DotResult.success(p.blinded),
+		"beacon": func(id: StringName, args: Dictionary) -> DotResult:
+			var p := _mod_player(id)
+			if p == null:
+				return _mod_absent(id)
+			p.beacon = bool(args["on"])
+			return DotResult.success(p.beacon),
 	}
 
 
@@ -258,9 +280,17 @@ func _mod_unsupported() -> Dictionary:
 		"give": "weapons are handed out at the handover, one each at random, and that draw is the fight's fairness",
 		"strip": "weapons are handed out at the handover, one each at random, and that draw is the fight's fairness",
 		"burn": "nothing here burns a player",
-		"blind": "the client draws no overlay a server could turn on",
-		"beacon": "the client draws no marker a server could turn on",
 	}
+
+
+## Toggles that outlive a new body here, beyond dot-moderation's own god and buddha.
+##
+## [b]Blind and beacon are about the person, not the body.[/b] A noclip or a freeze ends with
+## the round because arriving on a new field noclipped, or frozen on a slab that is about to
+## be shot at, is the round broken; a player an admin blinded or wanted the room to watch is
+## still that player next round, and a fall is exactly what somebody being punished would
+## otherwise use to end it.
+const PERSIST_ON_RESPAWN: Array[String] = ["blind", "beacon"]
 
 
 func _mod_can_teleport() -> bool:
@@ -374,6 +404,15 @@ func setup(p_server: DotServer, p_game: Object, p_link: Object) -> DotResult:
 
 	if voice != null:
 		voice.set("team_fn", Callable(self, "_team_of"))
+
+	if mod_tools != null:
+		# Read, extended and written back: the property is a PackedStringArray, and a packed
+		# array read through `get` is a copy — appending to it would change nothing.
+		var keep: PackedStringArray = mod_tools.get("persist_on_respawn")
+		for action in PERSIST_ON_RESPAWN:
+			if not keep.has(action):
+				keep.append(action)
+		mod_tools.set("persist_on_respawn", keep)
 
 	if game is ScGame and not (game as ScGame).round_began.is_connected(_on_round_began_for_tools):
 		(game as ScGame).round_began.connect(_on_round_began_for_tools)

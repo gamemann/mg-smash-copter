@@ -51,7 +51,23 @@ func _build_window() -> void:
 	# reads, because two copies of one limit is the duplication this family guards hardest
 	# against.
 	window.max_length = ScServices.chat_rules().max_length
-	add_child(window)
+
+	# [b]On its own layer, above the HUD's, and an admin's blind is the reason.[/b] Parented
+	# straight to this Node the window draws in the default canvas, which is UNDER every
+	# CanvasLayer — so the HUD's blind covered the chat as well, and a blinded player could
+	# not read the one line saying an admin had done it, or ask why. The full-rect Control in
+	# between is the HUD's own lesson: a CanvasLayer does not lay its children out.
+	var layer := CanvasLayer.new()
+	layer.name = "ChatLayer"
+	layer.layer = 2
+	add_child(layer)
+
+	var screen := Control.new()
+	screen.name = "Screen"
+	screen.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	screen.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(screen)
+	screen.add_child(window)
 
 	window.submitted.connect(_on_submitted)
 	window.opened.connect(func(_id: StringName) -> void: typing_changed.emit(true))

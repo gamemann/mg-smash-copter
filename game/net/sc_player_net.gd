@@ -69,6 +69,14 @@ var net_fire_kind: int = 0
 var net_reloading: bool = false
 var net_switching: bool = false
 
+# --- An administrator's marks, from the live tools ---------------------------
+
+## `ScPlayer.blinded`. Owner only: see [method _register_net_vars].
+var net_blind: bool = false
+
+## `ScPlayer.beacon`. Everybody's.
+var net_beacon: bool = false
+
 ## What this watcher last saw of that counter, so a wrap is read as uses rather than as a
 ## negative. One integer per watched player, which is what lets `ZeeWeaponNet` keep none.
 var _seen_fire_seq: int = 0
@@ -111,6 +119,23 @@ func _register_net_vars() -> void:
 
 		if bool(spec["owner_only"]):
 			var _owner := declaration.to_owner_only()
+
+	# [b]Per-player state rather than an event, and that is what makes both of these survive
+	# what an event does not.[/b] A client that joins after the admin typed `beacon`, a
+	# snapshot lost on the way, a field re-laid at the top of a round: each is a baseline the
+	# next snapshot corrects, where an event sent once is simply missed. Two bits, and nothing
+	# at all on a tick where neither changed.
+	#
+	# The blind goes to its owner alone. Nobody else's screen changes, and an opponent who
+	# received it would know the moment somebody could not see — the same reason the magazine
+	# and the reserve above are the owner's.
+	#
+	# [b]No relevance change for a beacon, where game-arena makes one.[/b] Every player here
+	# is already always relevant (`ScNetBridge`: the map is open air), so a beacon reaches
+	# every client however far away they are without asking — and a beacon turned OFF that
+	# set `always_relevant` back to false would take the player out of everybody's snapshot.
+	var _blind := replicate(&"net_blind", DotNetVar.Type.BOOL).to_owner_only()
+	replicate(&"net_beacon", DotNetVar.Type.BOOL)
 
 
 func _net_apply_input(input: DotNetInput, _tick: int) -> void:
@@ -162,6 +187,8 @@ func pull() -> void:
 		net_health = player.health.health
 
 	net_riding = player.riding
+	net_blind = player.blinded
+	net_beacon = player.beacon
 
 	# [b]After the arsenal has simulated, which on this end it has: the whole world ticks
 	# before anything is pulled.[/b] A rig that does not exist yet — which is every player
@@ -221,6 +248,9 @@ func _adopt() -> void:
 
 	if player.riding != net_riding:
 		player.set_riding(net_riding)
+
+	player.blinded = net_blind
+	player.beacon = net_beacon
 
 	_apply_weapons()
 

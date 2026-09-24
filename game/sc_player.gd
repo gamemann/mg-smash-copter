@@ -1,5 +1,6 @@
 extends CharacterBody3D
 
+const ScBeacon := preload("sc_beacon.gd")
 const ScConfig := preload("sc_config.gd")
 const ScPlatforms := preload("sc_platforms.gd")
 const ScSpecials := preload("sc_specials.gd")
@@ -103,6 +104,24 @@ var carried_metres: float = 0.0
 
 ## What the world's specials are doing to them right now. Written by [ScGame] each tick.
 var active: ScSpecials.Active = null
+
+## An administrator's `blind`: this player's own screen is blacked out.
+##
+## [b]Set on the server and replicated to the OWNER ONLY[/b] (`ScPlayerNet.net_blind`).
+## Nobody else's screen changes, so nobody else needs to know — and an opponent who could
+## read it would know exactly when somebody could not see the cannon's next shot coming, or
+## them. `ScHud` draws it.
+var blinded: bool = false
+
+## An administrator's `beacon`: a pulsing ring, a column and a ping every client draws and
+## hears, until it is turned off.
+##
+## Set on the server and replicated to everybody (`ScPlayerNet.net_beacon`). Drawn by
+## [method present_beacon], which only a client calls.
+var beacon: bool = false
+
+## The marker [member beacon] draws, while it does. Client side.
+var beacon_marker: ScBeacon = null
 
 var tick_rate: int = 64:
 	set(value):
@@ -447,6 +466,36 @@ func is_alive() -> bool:
 	return health == null or health.alive
 
 
+## Draws [member beacon] at [param at], and says whether it pinged this frame.
+##
+## [b]Called by the client, once a frame, for every player it knows.[/b] Never by the world:
+## a dedicated server draws nothing, and a marker built there would be three meshes and a
+## sound player per beaconed player that nobody will ever see.
+##
+## [b]Only while alive.[/b] The flag outlives a fall — the tools re-apply it on the next
+## round — but a ring round somebody who is out marks nothing, and a column over the last
+## place a faller was points everybody at empty air.
+##
+## [param at] is the DRAWN position: the render state for the local player and the
+## interpolated one for anybody else, for the reason the marker is top level.
+## [param local_view] hides the column on the beaconed player's own screen.
+func present_beacon(delta: float, at: Vector3, local_view: bool) -> bool:
+	if not beacon or not is_alive():
+		if beacon_marker != null:
+			beacon_marker.queue_free()
+			beacon_marker = null
+		return false
+
+	if beacon_marker == null:
+		beacon_marker = ScBeacon.new()
+		beacon_marker.name = "Beacon"
+		add_child(beacon_marker)
+
+	beacon_marker.local_view = local_view
+	beacon_marker.global_position = at
+	return beacon_marker.advance(delta)
+
+
 func describe() -> Dictionary:
 	return {
 		"id": String(player_id),
@@ -457,4 +506,6 @@ func describe() -> Dictionary:
 		"on": standing_on,
 		"carried": "%.1f m" % carried_metres,
 		"armed": weapons != null,
+		"blinded": blinded,
+		"beacon": beacon,
 	}

@@ -21,7 +21,7 @@ const ScPlayer := preload("../game/sc_player.gd")
 ## and those are what this is about.
 
 const SECTIONS := 9
-const CHECKS := 55
+const CHECKS := 61
 
 ## The port this test listens on. Nothing else on a developer's machine is likely to be
 ## holding it, and a boot that failed on a busy 27015 would look like the module being
@@ -531,7 +531,10 @@ func _test_the_live_tools() -> void:
 	)
 
 	if tools == null:
-		for what in ["joins", "noclip", "freeze", "slay", "respawn refused", "give refused"]:
+		for what in [
+			"joins", "noclip", "freeze", "marks", "timed blind", "timed blind lifts", "persist",
+			"off", "modtools", "slay", "respawn refused", "give refused",
+		]:
 			_check(false, what)
 		_finished()
 		return
@@ -554,7 +557,10 @@ func _test_the_live_tools() -> void:
 	_check(player != null, "a player joins through the roster")
 
 	if player == null:
-		for what in ["noclip", "freeze", "slay", "respawn refused", "give refused"]:
+		for what in [
+			"noclip", "freeze", "marks", "timed blind", "timed blind lifts", "persist",
+			"off", "modtools", "slay", "respawn refused", "give refused",
+		]:
 			_check(false, what)
 		net.send_fn = previous_send
 		_finished()
@@ -567,6 +573,50 @@ func _test_the_live_tools() -> void:
 	_run_command("freeze Pilot")
 	_check(DotFpsAdminModifiers.is_frozen(player.controller), "`freeze Pilot` holds them on their slab")
 	_run_command("unfreeze Pilot")
+
+	# Blind and beacon, through the console an admin types at. What is asserted is the flag
+	# and the field the netcode sends, which is the whole of what the server decides; the
+	# audience is `headless_net`'s, and the picture is `tools/shot.sh --view=blind`'s.
+	var _blinded := _run_command("blind Pilot")
+	var _lit := _run_command("beacon Pilot")
+	for _i in range(2):
+		await get_tree().process_frame
+	_check(player.blinded and player.beacon, "`blind Pilot` and `beacon Pilot` mark them")
+
+	# A blind is a spell. dot-moderation lifts it through the same handler when the time is
+	# up, so what is checked is the flag, not the timer.
+	var _dark_off := _run_command("blind Pilot off")
+	var _spell := _run_command("blind Pilot 0.2")
+	for _i in range(2):
+		await get_tree().process_frame
+	_check(player.blinded, "`blind Pilot 0.2` blinds them for a fifth of a second")
+	await get_tree().create_timer(0.4).timeout
+	_check(not player.blinded, "and it lifts on its own when the time is up")
+
+	# A round start is everybody's new body, and it is `mod_player_respawned` that says so.
+	# Both marks are about the person, where noclip ends with the body.
+	var _again := _run_command("blind Pilot")
+	var _flying := _run_command("noclip Pilot")
+	for _i in range(2):
+		await get_tree().process_frame
+	services.call("mod_player_respawned", &"616")
+	_check(
+		player.blinded and player.beacon and not DotFpsAdminModifiers.is_noclipped(player.controller),
+		"a new body keeps the blind and the beacon, and ends the noclip"
+	)
+	var _unblind := _run_command("blind Pilot off")
+	var _unlit := _run_command("beacon Pilot off")
+	for _i in range(2):
+		await get_tree().process_frame
+	_check(not player.blinded and not player.beacon, "and `off` lifts both")
+
+	var listed := _run_command("modtools")
+	for _i in range(2):
+		await get_tree().process_frame
+	_check(
+		_said(listed, "blind") and _said(listed, "beacon") and not _said(listed, "draws no"),
+		"`modtools` lists both as supported", " | ".join(listed)
+	)
 
 	var slain := _run_command("slay Pilot")
 	_check(not player.is_alive(), "`slay Pilot` puts them out, as ordinary damage", " | ".join(slain))

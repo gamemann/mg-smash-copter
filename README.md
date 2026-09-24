@@ -21,9 +21,9 @@ It is a first- and third-person multiplayer minigame built on the `dot-*` addon 
 
 ```bash
 godot --path .                                                # play it, alone, against stand-ins
-godot --headless --path . res://examples/headless_run.tscn    # the simulation, 131 checks
-godot --headless --path . res://examples/dedicated.tscn       # as a real server, 54 checks
-godot --headless --path . res://examples/headless_net.tscn     # over the wire, 135 checks
+godot --headless --path . res://examples/headless_run.tscn    # the simulation, 140 checks
+godot --headless --path . res://examples/dedicated.tscn       # as a real server, 61 checks
+godot --headless --path . res://examples/headless_net.tscn     # over the wire, 145 checks
 tools/shot.sh --view=field                                    # render a frame and look at it
 tools/shot.sh --view=jump --sc-layout-ids=checker             # the jump a layout means
 ```
@@ -100,6 +100,8 @@ sc_bot_spread 2             // sharper stand-ins
 sc_chopper 0                // no chopper on any layout
 sc_min_players 6            // keep six in the round with stand-ins
 ```
+
+A moderator has dot-moderation's live tools, with this game's meaning for each: `noclip`, `freeze`, `speed`, `gravity`, `god`, `buddha`, `hp`, `slay`, `slap`, `rename`, the teleports, and `blind <player> [on|off|seconds]` and `beacon <player> [on|off]`. A blind blacks out that player's own screen and nobody else's, tilt bar included; a beacon puts a pulsing ring, a column you can see from anywhere and a ping on one player for everybody. Both outlive a round, as god does. `respawn`, `give` and `strip` are refused, and `modtools` says why.
 
 `sc_status`, `sc_net`, `sc_layouts` and `sc_specials` say what the server is doing. An empty server fills itself with stand-ins, because a round needs two sides to exist at all and one person alone would otherwise watch a round start and end several times a second.
 

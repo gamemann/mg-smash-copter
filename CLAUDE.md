@@ -17,7 +17,13 @@ Neither half would be much on its own. What makes the second one work is that th
 
 `ScServices` answers dot-game's `_mod_abilities` with noclip, freeze, speed and gravity (predicted modifiers, so a player an admin moves does not rubber-band), god, buddha, hp, slay and slap as ordinary damage, rename, and teleports that go through `ScPlayer.place_at` — the one way to move a player here that also moves the tick the client draws from. `@team:<n>` is the side.
 
-Refused, with the reason `modtools` prints: **respawn**, because falling is how a round is lost and putting a faller back decides it; **give and strip**, because weapons are handed out at the handover, one each at random, and that draw is the second half's fairness. Anything that moves a body is refused while they fly the chopper. A round start is everybody's new body, so it ends a noclip or a freeze and keeps god.
+Blind and beacon are supported — see below. Refused, with the reason `modtools` prints: **respawn**, because falling is how a round is lost and putting a faller back decides it; **give and strip**, because weapons are handed out at the handover, one each at random, and that draw is the second half's fairness. Anything that moves a body is refused while they fly the chopper. A round start is everybody's new body, so it ends a noclip or a freeze and keeps god.
+
+**Blind and beacon were refused as "no client overlay" until 2026-09-24, and are two flags now**, after game-arena's pattern. `ScPlayer.blinded` and `ScPlayer.beacon` are set by the handlers on the server and replicated as per-player state in `ScPlayerNet` — `net_blind` **owner-only**, as the magazine is, because an opponent who could read it would know the moment somebody could not see; `net_beacon` to everybody. State rather than an event, so a joiner, a lost snapshot and a re-laid field are all corrected by the next snapshot. **There is no relevance change**, where game-arena makes a beaconed player always relevant: every player here already is, and a beacon turned off that set the flag back would take the player out of everybody's snapshot. `ScHud.blind_overlay` fades a near-black rect in over a quarter of a second under the HUD's numbers and **hides the tilt bar**, because the bar is the floor under their feet drawn as a number — a blind that left it would leave a player balancing by instrument. **The chat box moved to its own CanvasLayer (layer 2) for this**: it drew in the default canvas, under every CanvasLayer, so the first rendered blind covered the chat too — and a blinded player could not read the line saying an admin had done it. `ScBeacon` (by preload, no `class_name`) is a ring, a once-a-second ripple and a 30 m column drawn through everything except on your own beacon, placed by `ScClient.present_beacons` at the drawn position — the client and never the world, because the world also runs on a dedicated server. **The ping is synthesised in `ScBeacon`**, a falling sine on an `AudioStreamPlayer3D`: this game ships no sound and no audio addon, and a dependency in a delivered pack for one tone would be a bigger change than the tone. Both persist across a round (`ScServices.PERSIST_ON_RESPAWN`); `blind <p> <seconds>` is dot-moderation's `TIMED_TOGGLES`.
+
+`headless_net` asserts the audience (the client's own player blinded, the stand-in's blind never sent to it, both beacons drawn) over a link dropping one snapshot in three, armed by dropping `to_owner_only()`, which two checks caught; `dedicated` drives both through the console, the timed lift and the persistence (armed by emptying `PERSIST_ON_RESPAWN`); `headless_run` asserts what the client draws — the blind covers the viewport (armed with a top-left, sizeless rect), the ping is once a second (armed by pinging every frame), no column on your own, no marker while out. `tools/shot.sh --view=beacon` and `--view=blind` render both.
+
+`headless_net`'s `SECTIONS` was the same "name that occurs once" as `dedicated`'s below: declared as 14 and compared with nothing. It is compared now.
 
 `dedicated`'s `SECTIONS` was declared as 6 and read by nothing while eight sections ran — the "name that occurs once" detector, on the suite itself. It is compared now, and is 9 with the live-tools section.
 
@@ -37,7 +43,8 @@ game/
   sc_copter.gd      a fourth kind of vehicle chassis, because neither shipped one flies
   sc_player.gd      one person: movement, the carry, health, weapons
   sc_game.gd        the simulation: phases, loads, impacts, falls, the handover. Headless
-  sc_hud.gd         four numbers, a tilt bar and a dot
+  sc_hud.gd         four numbers, a tilt bar, a dot, and an admin's blind
+  sc_beacon.gd      an admin's beacon: a ring, a ripple, a column and a synthesised ping
   sc_client.gd      one local player, alone or against a server. First person and third
   sc_client_chat.gd the chat box and the microphone
   sc_services.gd    chat, voice and moderation. Seventy lines over dot-game's base
@@ -52,7 +59,7 @@ assets/kenney/      eight CC0 models and two atlases
 assets/{blaster-kit,melee,arms}/  the weapon pack's own art, vendored
 textures/prototype/ six CC0 prototype textures, one per role
 scenes/             sc_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (131), dedicated (46), headless_net (135)
+examples/           headless_run (140), dedicated (61), headless_net (145)
 tools/              shot.gd/.tscn/.sh — render a frame and look at it; any --sc-* is config
 ```
 
@@ -246,14 +253,16 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 20 sections, 131 checks
-godot --headless --path . res://examples/dedicated.tscn      # 9 sections, 54 checks
-godot --headless --path . res://examples/headless_net.tscn   # 14 sections, 135 checks
+godot --headless --path . res://examples/headless_run.tscn   # 21 sections, 140 checks
+godot --headless --path . res://examples/dedicated.tscn      # 9 sections, 61 checks
+godot --headless --path . res://examples/headless_net.tscn   # 15 sections, 145 checks
 tools/shot.sh --view=field
 tools/shot.sh --view=lean
 tools/shot.sh --view=copter
 tools/shot.sh --view=showdown
 tools/shot.sh --view=jump --sc-layout-ids=checker   # the jump a layout means, from behind
+tools/shot.sh --view=beacon                         # an admin's beacon, from across the field
+tools/shot.sh --view=blind                          # a blinded player's own screen
 ```
 
 All three suites count sections **and** a total, and the total is the one that catches what the section counter cannot: a runtime error inside a section aborts that function and the section counter is already satisfied, because the section announced itself on the way in. Every guard was armed — the total raised by one and the run re-run — and every one fired.

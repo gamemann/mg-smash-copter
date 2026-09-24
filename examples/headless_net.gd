@@ -11,6 +11,7 @@ const ScGame := preload("../game/sc_game.gd")
 const ScLayouts := preload("../game/sc_layouts.gd")
 const ScPlatforms := preload("../game/sc_platforms.gd")
 const ScPlayer := preload("../game/sc_player.gd")
+const ScServices := preload("../game/sc_services.gd")
 const ScSpecials := preload("../game/sc_specials.gd")
 
 ## mg-smash-copter over the wire: a real server, a real client, and a lossy loopback.
@@ -38,8 +39,8 @@ const ScSpecials := preload("../game/sc_specials.gd")
 ## real client is a separate program with its own export. Make them disagree, and let HELLO
 ## and LAYOUT correct it.
 
-const SECTIONS := 14
-const CHECKS := 135
+const SECTIONS := 15
+const CHECKS := 145
 
 ## Who the client is, on both ends.
 const CLIENT_PEER := 7
@@ -78,6 +79,10 @@ var _client_net: DotNetManager = null
 var _server_bridge: ScNetBridge = null
 var _client_bridge: ScNetBridge = null
 
+## The stand-in seated before the client joins: a player this client does NOT own, which is
+## what an owner-only field has to be checked against.
+var _stand_in: ScPlayer = null
+
 var _to_client: Array = []
 var _to_server: Array = []
 
@@ -111,6 +116,7 @@ func _run() -> void:
 		await _test_a_special_is_announced()
 		await _test_chat_crosses()
 		await _test_a_lossy_link()
+		await _test_blind_and_beacon()
 		await _test_leaving()
 
 	print("")
@@ -122,8 +128,13 @@ func _run() -> void:
 
 	var code := 1 if _failed > 0 else 0
 
-	if _sections_entered != _sections_finished:
-		print("ERROR: %d of %d sections finished." % [_sections_finished, _sections_entered])
+	# Against the declared number too. SECTIONS was declared here and read by nothing — the
+	# "name that occurs once" detector, on the suite itself — so a section that was never
+	# called at all passed as long as the ones that were called finished.
+	if _sections_entered != _sections_finished or _sections_entered != SECTIONS:
+		print("ERROR: %d of %d sections finished, %d expected." % [
+			_sections_finished, _sections_entered, SECTIONS
+		])
 		code = 1
 
 	if _passed + _failed != CHECKS:
@@ -439,6 +450,7 @@ func _build() -> bool:
 	# at all, and `_side_for_new_player` puts a joiner on the smallest — so seating one first
 	# is also what decides which side the client under test ends up on.
 	var stand_in := _server_bridge.add_bot("Stand-in", 1)
+	_stand_in = stand_in
 	_check(stand_in != null and stand_in.is_bot, "a stand-in is seated before anybody joins")
 	_check(
 		int(_server_bridge.describe()["players"]) == 1,
@@ -1130,6 +1142,129 @@ func _test_a_lossy_link() -> void:
 		"%.5f rad worst" % worst)
 
 	_finished()
+
+
+# --- An admin's marks -------------------------------------------------------
+
+## An administrator's blind and beacon, through the real handlers, over a link that drops one
+## snapshot in three.
+##
+## [b]The audience is the whole point of both.[/b] The client owns Ada and does not own the
+## stand-in. A blind is its owner's screen and nobody else's, so Ada's must reach this client
+## and the stand-in's must NOT — an opponent who could read it would know the moment
+## somebody could not see. A beacon is for everybody, so both must arrive. Asserted on the
+## client's own copy of each player, which is what its HUD and its renderer read.
+##
+## Armed: with `to_owner_only()` dropped from `ScPlayerNet`, "the client is never told
+## about somebody else's" fails.
+func _test_blind_and_beacon() -> void:
+	_section("an admin's blind and beacon: who is told")
+
+	# The handlers exactly as the server's services layer builds them, over the server's
+	# world. Never set up: nothing here needs chat, voice or a store.
+	var services := ScServices.new()
+	services.game = _server_game
+	var handlers := services._mod_abilities()
+	var blind: Callable = handlers.get("blind", Callable())
+	var beacon: Callable = handlers.get("beacon", Callable())
+	_check(
+		blind.is_valid() and beacon.is_valid() and not services._mod_unsupported().has("blind")
+		and not services._mod_unsupported().has("beacon"),
+		"the game supports both, and refuses neither"
+	)
+
+	var mine: ScPlayer = _client_game.players.get(ScNetBridge.player_key(SESSION))
+	var bot_key := _stand_in.player_id if _stand_in != null else &""
+	var theirs: ScPlayer = _client_game.players.get(bot_key)
+	var mine_net := _behaviour_of(mine)
+	var theirs_net := _behaviour_of(theirs)
+
+	_check(
+		mine_net != null and mine_net.find_var(&"net_blind").audience == DotNetVar.Audience.OWNER
+		and mine_net.find_var(&"net_beacon").audience == DotNetVar.Audience.EVERYONE,
+		"the blind is declared owner-only and the beacon for everybody"
+	)
+
+	var ada := String.num_int64(SESSION)
+	var bot := String.num_int64(ScNetBridge.session_of(bot_key))
+	var results: Array[DotResult] = [
+		blind.call(StringName(ada), {"on": true, "actor": "1"}),
+		blind.call(StringName(bot), {"on": true, "actor": "1"}),
+		beacon.call(StringName(ada), {"on": true, "actor": "1"}),
+		beacon.call(StringName(bot), {"on": true, "actor": "1"}),
+	]
+	_check(
+		results.all(func(r: DotResult) -> bool: return r.ok),
+		"the server blinds and beacons both players"
+	)
+
+	_drop_every = 3
+	await _steps(24)
+
+	_check(mine != null and mine.blinded, "the owner's client blacks its own screen out")
+	_check(
+		theirs != null and not theirs.blinded and theirs_net != null and not theirs_net.net_blind,
+		"and the client is never told about somebody else's",
+		"received net_blind = %s" % (str(theirs_net.net_blind) if theirs_net != null else "?")
+	)
+	_check(
+		mine != null and mine.beacon and theirs != null and theirs.beacon,
+		"while the client draws a beacon on both"
+	)
+
+	var server_identity := _identity_of(_server_game.players.get(ScNetBridge.player_key(SESSION)))
+	_check(
+		server_identity != null and server_identity.always_relevant,
+		"a beaconed player is relevant to every peer — as every player here already is"
+	)
+
+	var _off: Array[DotResult] = [
+		blind.call(StringName(ada), {"on": false, "actor": "1"}),
+		blind.call(StringName(bot), {"on": false, "actor": "1"}),
+		beacon.call(StringName(ada), {"on": false, "actor": "1"}),
+		beacon.call(StringName(bot), {"on": false, "actor": "1"}),
+	]
+	await _steps(24)
+	_drop_every = 0
+
+	_check(
+		not mine.blinded and not mine.beacon and not theirs.beacon,
+		"and turning both off reaches the client"
+	)
+	# game-arena turns relevance off with the beacon. Here that would take the player out of
+	# everybody's snapshot — see `ScPlayerNet._register_net_vars`.
+	_check(
+		server_identity != null and server_identity.always_relevant,
+		"and a beacon turned off leaves the player relevant, which on this map is everybody"
+	)
+
+	var absent: DotResult = blind.call(&"9999", {"on": true, "actor": "1"})
+	_check(not absent.ok, "a blind on nobody is refused rather than ignored")
+
+	services.free()
+	_finished()
+
+
+func _behaviour_of(body: ScPlayer) -> DotNetBehaviour:
+	if body == null:
+		return null
+
+	for child in body.get_children():
+		if child is DotNetBehaviour:
+			return child as DotNetBehaviour
+
+	return null
+
+
+func _identity_of(body: ScPlayer) -> DotNetIdentity:
+	if body == null:
+		return null
+
+	for child in body.get_children():
+		if child is DotNetIdentity:
+			return child as DotNetIdentity
+
+	return null
 
 
 func _test_leaving() -> void:
