@@ -37,6 +37,16 @@ const ScSpecials := preload("sc_specials.gd")
 ## Seconds between checks of how many people are in the round.
 const ROSTER_INTERVAL := 2.0
 
+## Where the services keep punishments. Empty is [DotGameServices]'s own default,
+## `user://smash-copter_punishments.json` — the store a real server enforces.
+##
+## [b]Static, because nothing holds this module before it exists[/b]: dot-server constructs
+## it from a path inside `load_module`, so there is no instance for a host to set a field on
+## first. `examples/dedicated.tscn` points it at a directory of its own; before it could,
+## every run appended the live tools' audit warnings to the real store, 106 of them by the
+## time anybody counted. game-simple-lobby's `RoomModule.punishments_path` is the same seam.
+static var punishments_file: String = ""
+
 ## The `sc_bots` cvar, held so the tick does not look it up sixty times a second.
 var _bots: DotConVar = null
 
@@ -105,6 +115,7 @@ func _make_bridge() -> Node:
 func _make_services() -> Node:
 	var services := ScServices.new()
 	services.bridge = bridge
+	services.punishments_file = punishments_file
 	return services
 
 

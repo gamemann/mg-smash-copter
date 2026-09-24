@@ -59,7 +59,7 @@ assets/kenney/      eight CC0 models and two atlases
 assets/{blaster-kit,melee,arms}/  the weapon pack's own art, vendored
 textures/prototype/ six CC0 prototype textures, one per role
 scenes/             sc_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (140), dedicated (61), headless_net (145)
+examples/           headless_run (140), dedicated (66), headless_net (161)
 tools/              shot.gd/.tscn/.sh — render a frame and look at it; any --sc-* is config
 ```
 
@@ -254,8 +254,8 @@ find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read
     godot --headless --path . --check-only --script "res://${f#./}"
 done
 godot --headless --path . res://examples/headless_run.tscn   # 21 sections, 140 checks
-godot --headless --path . res://examples/dedicated.tscn      # 9 sections, 61 checks
-godot --headless --path . res://examples/headless_net.tscn   # 15 sections, 145 checks
+godot --headless --path . res://examples/dedicated.tscn      # 10 sections, 66 checks
+godot --headless --path . res://examples/headless_net.tscn   # 16 sections, 161 checks
 tools/shot.sh --view=field
 tools/shot.sh --view=lean
 tools/shot.sh --view=copter
@@ -284,5 +284,5 @@ godot --headless --path ../mg-smash-copter --import   # form five: a pack cannot
 In the order they are worth doing.
 
 1. **Connect a real client shell to a delivered server.** The pack is published, signed and mounted, and a server runs whole rounds out of it with a clean log — but every player in those rounds is a bot, so Godot's own RPC routing over a real socket is still the one layer nothing here has exercised. It is where five of mg-buses-from-hell's bugs came from.
-2. **A world model in a watcher's hands.** The weapon state replicates and `ZeeWeaponNet.apply` already takes a null model; what is missing is a character with a hand mount, and this game draws players as capsules.
+2. **A world model in a watcher's hands.** The weapon state replicates and `ZeeWeaponNet.apply` already takes a null model; what is missing is a hand mount on `ScFigure`, the Kenney body a client draws for everybody else.
 3. **An identity layer**, if this game ever wants profiles and avatars. dot-game reports the gap at boot and carries on, which is a server where everybody is a guest.
