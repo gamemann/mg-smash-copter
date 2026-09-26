@@ -62,7 +62,7 @@ assets/kenney/      eight CC0 models and two atlases
 assets/{blaster-kit,melee,arms}/  the weapon pack's own art, vendored
 textures/prototype/ six CC0 prototype textures, one per role
 scenes/             sc_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (205), dedicated (69), headless_net (197)
+examples/           headless_run (209), dedicated (70), headless_net (197)
 tools/              shot.gd/.tscn/.sh — render a frame and look at it; any --sc-* is config
                     net_shot.gd/.tscn — `shot.sh --view=walk`: a CONNECTED client running,
                     rendered and measured (key to motion, corrections, eye speed per frame)
@@ -120,6 +120,14 @@ The showdown is reached by teleport, not by a jump, so its question is whether a
 Every other 3D game in this family uses it. A spawn point is a fixed place in the world, and **every place in this world is on something that tips, collapses, or is not there this round** — so a `DotSpawnPoint` would be a promise the map cannot keep. The game places its own players: a side to a platform, spread around its middle, facing inward, from the field it has just built.
 
 `DotMatch.spawns_ref` is still set, to the match node itself, so that dot-match never walks the whole scene looking for points that do not exist. Unset it picks up another world's in a process holding a server and a client, and the outgoing map's for the frame after a round change; both are in this family's own bug list.
+
+## The ring has cover, facing the pads (2026-09-26)
+
+**The ring was the most exposed floor in the sky**, while being "the thing worth taking". A survivor who walked onto it stood in every pad's line of fire with nothing between, so the showdown was people holding their pads until the clock ran out. `ScArena.ring_cover()` puts one block per team on the ring, on the line from its middle to that team's catwalk, half-way in and square to it: 2.4 m wide and 1.1 m high (`RING_COVER_SIZE`), so a person crouched behind one is out of that pad's sight and a person standing is shot at over it. Derived from the same corner angles as the catwalks, so any team count gets one per pad.
+
+**Facing the pads, and the first draft did not.** It put the blocks between the catwalks, and the pads stand on the catwalk lines, so every block was end-on to both neighbouring pads and covered nobody. A survivor coming off a catwalk has seven metres of ring before the block and walks round it. The showdown walk stops two metres inside the rim and never reaches one.
+
+`headless_run`'s "the ring has cover, and it faces the pads" asks this with two sides and with three: one block per side, built and on the ring, and from every pad a ray to somebody crouched behind its block hits the block while a ray to somebody standing there hits nothing. Armed by not building the blocks (four checks fail). Rendered with `tools/shot.sh --view=ring` and `--view=showdown`.
 
 ## Decision 6: the showdown is somewhere else
 
@@ -317,13 +325,14 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 27 sections, 205 checks
-godot --headless --path . res://examples/dedicated.tscn      # 10 sections, 69 checks
+godot --headless --path . res://examples/headless_run.tscn   # 28 sections, 209 checks
+godot --headless --path . res://examples/dedicated.tscn      # 10 sections, 70 checks
 godot --headless --path . res://examples/headless_net.tscn   # 20 sections, 197 checks
 tools/shot.sh --view=field
 tools/shot.sh --view=lean
 tools/shot.sh --view=copter
 tools/shot.sh --view=showdown
+tools/shot.sh --view=ring                           # the ring from a pad at eye height: its cover
 tools/shot.sh --view=jump --sc-layout-ids=checker   # the jump a layout means, from behind
 tools/shot.sh --view=bridge --sc-layout-ids=spine   # a bridge weighed down at one end, from beside it
 tools/shot.sh --view=beacon                         # an admin's beacon, from across the field

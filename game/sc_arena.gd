@@ -454,6 +454,82 @@ func _build_showdown() -> void:
 		)
 		walk.rotation = Vector3(0.0, atan2(outward.x, outward.z), 0.0)
 
+	var cover := ring_cover()
+
+	for index in range(cover.size()):
+		_cover_block("RingCover%d" % index, cover[index])
+
+
+## The cover on the showdown ring: one block per team, on the line from the ring's middle
+## to that team's catwalk, [constant RING_COVER_OUT] of the way out and square to it, so it
+## stands between the ring and that team's pad. Each is a transform whose origin is the
+## block's centre.
+##
+## [b]Added 2026-09-26, because a flat ring is not worth taking.[/b] The ring is "the
+## thing worth taking" and the catwalks the only way to it, and until then it was the
+## most exposed floor in the sky: a survivor who walked onto it stood in every pad's line
+## of fire with nothing between, so the showdown was six people holding their pads. A
+## block chest high, facing a pad, is somewhere to hold the ring FROM against that pad,
+## which is what makes committing to the walk a plan.
+##
+## [b]Facing the pads, not between the catwalks,[/b] which is where the first draft put
+## them: the pads stand on the catwalk lines, so a block between two catwalks is end-on to
+## both and covers nobody from either. Half-way in, so a survivor coming off a catwalk has
+## seven metres of floor before it and walks round it; `headless_run`'s walk onto the ring
+## stops two metres inside the rim and never reaches one.
+func ring_cover() -> Array[Transform3D]:
+	var out: Array[Transform3D] = []
+	var middle := showdown_centre()
+	var ring_radius := config.corner_size * 0.85
+
+	for index in range(config.team_count):
+		var corner := corner_point(index, config.team_count)
+		var out_dir := Vector3(corner.x - middle.x, 0.0, corner.z - middle.z)
+
+		if out_dir.length() < 0.001:
+			continue
+
+		out_dir = out_dir.normalized()
+		var centre := middle + out_dir * ring_radius * RING_COVER_OUT
+		centre.y = middle.y + RING_COVER_SIZE.y * 0.5
+		# Long side across the line to the pad, so it covers somebody from that pad.
+		out.append(Transform3D(Basis(Vector3.UP, atan2(out_dir.x, out_dir.z)), centre))
+
+	return out
+
+
+## Wide enough for one person to crouch behind, and chest high: a person standing behind
+## it is shot at over it, a person crouched is not.
+const RING_COVER_SIZE := Vector3(2.4, 1.1, 0.6)
+
+## How far out from the ring's middle the cover stands, as a fraction of its half-width.
+const RING_COVER_OUT := 0.5
+
+
+func _cover_block(node_name: String, at: Transform3D) -> void:
+	var body := StaticBody3D.new()
+	body.name = node_name
+	body.transform = at
+
+	var shape := BoxShape3D.new()
+	shape.size = RING_COVER_SIZE
+
+	var collider := CollisionShape3D.new()
+	collider.name = "Collision"
+	collider.shape = shape
+	body.add_child(collider)
+
+	var mesh := MeshInstance3D.new()
+	mesh.name = "Mesh"
+	var box := BoxMesh.new()
+	box.size = RING_COVER_SIZE
+	mesh.mesh = box
+	mesh.material_override = ScTextures.surface(ScTextures.Role.CANNON)
+	body.add_child(mesh)
+
+	_classify(body, &"world")
+	_showdown.add_child(body)
+
 
 ## One flat surface with a kerb around it, open wherever a catwalk joins it.
 ##

@@ -34,7 +34,7 @@ const ScSpectate := preload("../game/sc_spectate.gd")
 ## `set_physics_process(false)` goes on first and every section advances the world itself.
 
 ## Sections entered, against sections that ran to their last line.
-const SECTIONS := 27
+const SECTIONS := 28
 
 ## And the total this counter cannot be.
 ##
@@ -42,7 +42,7 @@ const SECTIONS := 27
 ## checks that already ran still print ok, the ones after it never happen, and the section
 ## counter is satisfied because the section announced itself on the way in. dot-settings
 ## reported "8 sections, 63 passed, 0 failed" and exited 0 with eight checks missing.
-const CHECKS := 205
+const CHECKS := 209
 
 const TICK_RATE := 64
 const TICK := 1.0 / float(TICK_RATE)
@@ -86,6 +86,7 @@ func _run() -> void:
 	await _test_reach()
 	await _test_the_throat()
 	await _test_the_showdown_walk()
+	await _test_the_ring_cover()
 	await _test_the_zigzag()
 	await _test_the_spine()
 	await _test_a_slope_holds()
@@ -1398,6 +1399,71 @@ func _run_up_dip(
 func _cell_name(platforms: ScPlatforms, index: int) -> String:
 	var deck := platforms.deck_at(index)
 	return "(%d,%d)" % [deck.column, deck.row]
+
+
+## The ring's cover: one block per team, facing that team's pad, and it covers.
+func _test_the_ring_cover() -> void:
+	_section("the ring has cover, and it faces the pads")
+
+	for sides: int in [2, 3]:
+		var game := await _world(func(c: ScConfig) -> void:
+			c.team_count = sides
+			c.cannon_enabled = false
+			c.specials_enabled = false
+		)
+		await _physics_frame()
+
+		var middle := game.arena.showdown_centre()
+		var ring := game.config.corner_size * 0.85
+		var cover := game.arena.ring_cover()
+		var built := 0
+
+		for index in range(cover.size()):
+			if game.arena.has_node(NodePath("Showdown/RingCover%d" % index)):
+				built += 1
+
+		var on_ring := true
+
+		for block in cover:
+			var d := block.origin - middle
+			if absf(d.x) > ring - 1.5 or absf(d.z) > ring - 1.5:
+				on_ring = false
+
+		_check(cover.size() == sides and built == sides and on_ring,
+			"with %d sides, one block per side stands on the ring" % sides,
+			"%d described, %d built, on the ring %s" % [cover.size(), built, on_ring])
+
+		# From every pad: a person crouched right behind that pad's block is out of sight,
+		# and a person standing there is not, which is what chest high means.
+		var space := game.arena.get_world_3d().direct_space_state
+		var hidden := 0
+		var seen := 0
+
+		for index in range(sides):
+			var eye := game.arena.corner_point(index, sides) + Vector3.UP * 1.6
+			var block := cover[index]
+			var inward := (middle - block.origin)
+			inward.y = 0.0
+			inward = inward.normalized()
+			var behind := block.origin + inward * (ScArena.RING_COVER_SIZE.z * 0.5 + 0.4)
+			var crouched := Vector3(behind.x, middle.y + 0.7, behind.z)
+			var standing := Vector3(behind.x, middle.y + 1.6, behind.z)
+
+			var low := space.intersect_ray(PhysicsRayQueryParameters3D.create(eye, crouched))
+			var high := space.intersect_ray(PhysicsRayQueryParameters3D.create(eye, standing))
+
+			if not low.is_empty() and String((low["collider"] as Node).name).begins_with("RingCover"):
+				hidden += 1
+			if high.is_empty():
+				seen += 1
+
+		_check(hidden == sides and seen == sides,
+			"and from each pad it hides somebody crouched behind it, not somebody standing",
+			"%d of %d hidden, %d of %d seen over it" % [hidden, sides, seen, sides])
+
+		await _dispose(game)
+
+	_finished()
 
 
 func _test_the_showdown_walk() -> void:

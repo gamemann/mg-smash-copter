@@ -199,6 +199,13 @@ func _place_camera(game: ScGame, view: String) -> void:
 				# another platform sees somebody — the column has to read from there.
 				camera.global_position = at + Vector3(-16.0, 7.0, 20.0)
 				camera.look_at(at + Vector3(0.0, 4.0, 0.0), Vector3.UP)
+		"ring":
+			# From team 0's pad at eye height, across the catwalk at the ring: its cover
+			# block should stand square in the middle of the frame.
+			var ring_middle := game.arena.showdown_centre()
+			var pad := game.arena.corner_point(0, game.config.team_count)
+			camera.global_position = pad + Vector3.UP * 1.7
+			camera.look_at(ring_middle + Vector3.UP * 0.6, Vector3.UP)
 		"showdown":
 			var middle := game.arena.showdown_centre()
 			camera.global_position = middle + Vector3(
