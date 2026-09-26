@@ -200,6 +200,8 @@ func _boot() -> void:
 	# [b]Off, or this run never ends.[/b] The stdin console reads on its own thread, and a
 	# thread blocked in a read is a thread Godot will not exit without — so the suite prints
 	# its results, calls `quit()`, and hangs.
+	# Kept after dot-server 5f46687, which no longer reads a pipe unless `stdin_console_pipes`
+	# is on: a terminal is still read, and a suite takes no commands from either.
 	config.stdin_console_enabled = false
 
 	server = DotServer.new()
