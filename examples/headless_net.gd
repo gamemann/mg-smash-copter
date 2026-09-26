@@ -41,8 +41,8 @@ const ScSpecials := preload("../game/sc_specials.gd")
 ## real client is a separate program with its own export. Make them disagree, and let HELLO
 ## and LAYOUT correct it.
 
-const SECTIONS := 19
-const CHECKS := 186
+const SECTIONS := 20
+const CHECKS := 197
 
 ## Who the client is, on both ends.
 const CLIENT_PEER := 7
@@ -116,6 +116,7 @@ func _run() -> void:
 
 	if await _build():
 		await _test_a_client_joins()
+		await _test_two_builds_share_the_wire()
 		await _test_the_field_arrives()
 		await _test_a_platform_leans_across_the_wire()
 		await _test_a_platform_collapses_across_the_wire()
@@ -463,11 +464,24 @@ func _build() -> bool:
 		String(_server_bridge.link.name)
 	)
 
+	# [b]Two builds, not one.[/b] Each end registers an OPTIONAL message type the other has
+	# never heard of -- a server one release ahead, a client one release ahead -- and the
+	# whole of the rest of this suite plays over that. They must still agree on what has
+	# to match, and every section after this one is the proof that they can play.
+	_server_net.messages.register(
+		SkewServerNews.NAME, SkewServerNews, DotNetMessage.Delivery.RELIABLE,
+		DotNetMessage.Direction.TO_CLIENT, false
+	)
+	_client_net.messages.register(
+		SkewClientNews.NAME, SkewClientNews, DotNetMessage.Delivery.RELIABLE,
+		DotNetMessage.Direction.TO_SERVER, false
+	)
+
 	_server_net.messages.seal()
 	_client_net.messages.seal()
 	_check(
 		_server_net.messages.schema_hash() == _client_net.messages.schema_hash(),
-		"both ends agree on the message schema"
+		"both ends agree on the message schema they must share, with a type each of their own"
 	)
 
 	_server_bridge.link.loopback = _on_server_send
@@ -1934,6 +1948,146 @@ func _make_game(server: bool, parent: Node) -> ScGame:
 	parent.add_child(game)
 	game.set_physics_process(false)
 	return game
+
+
+## A type only the server's build has, which a client can do without.
+class SkewServerNews extends DotNetMessage:
+	const NAME := &"skew.server_news"
+	var headline: String = ""
+
+	func _type_name() -> StringName:
+		return NAME
+
+	func _write(w: DotNetWriter) -> void:
+		w.write_string(headline, 64)
+
+	func _read(r: DotNetReader) -> void:
+		headline = r.read_string(64)
+
+
+## A type only the client's build has, which a server can do without.
+class SkewClientNews extends DotNetMessage:
+	const NAME := &"skew.client_news"
+	var mood: int = 0
+
+	func _type_name() -> StringName:
+		return NAME
+
+	func _write(w: DotNetWriter) -> void:
+		w.write_uint(mood, 8)
+
+	func _read(r: DotNetReader) -> void:
+		mood = r.read_uint(8)
+
+
+## A type a newer client REQUIRES, which this server has never heard of.
+class SkewVital extends DotNetMessage:
+	func _type_name() -> StringName:
+		return &"skew.vital"
+
+	func _write(_w: DotNetWriter) -> void:
+		pass
+
+	func _read(_r: DotNetReader) -> void:
+		pass
+
+
+# --- Two builds --------------------------------------------------------------
+
+## [b]A server and a client built from different sources, on one wire.[/b]
+##
+## Each registered an optional type the other lacks (see `_build`). Their tables cross as
+## the join happens; each sends the other its own type, and each skips what it does not
+## know without disturbing anything after it -- which the seventeen sections after this one
+## then play on top of. And a client that REQUIRES a type this server lacks, or lacks the
+## types this game requires, is refused with a sentence rather than left to misread.
+func _test_two_builds_share_the_wire() -> void:
+	_section("two builds with different message types share the wire")
+
+	_exchange()
+
+	_check(
+		_server_net.messages.knows_peer(CLIENT_PEER) and _client_net.messages.knows_peer(1),
+		"each end has the other's table, sent as the join happened"
+	)
+	_check(
+		not _server_net.messages.is_refused(CLIENT_PEER) and not _client_net.messages.is_refused(1),
+		"and neither refused the other over an optional type"
+	)
+	_check(
+		not _server_net.messages.peer_has(CLIENT_PEER, SkewServerNews.NAME)
+			and not _client_net.messages.peer_has(1, SkewClientNews.NAME),
+		"each knows which of its types the other lacks"
+	)
+
+	var client_skipped := _client_net.messages.skipped
+	var news := SkewServerNews.new()
+	news.headline = "only the newer server has this"
+	var nw := DotNetWriter.new()
+	_server_net.messages.encode(news, nw)
+	_server_bridge.link.send_event(CLIENT_PEER, nw.to_bytes())
+
+	var server_skipped := _server_net.messages.skipped
+	var mood := SkewClientNews.new()
+	mood.mood = 3
+	var mw := DotNetWriter.new()
+	_client_net.messages.encode(mood, mw)
+	_client_bridge.link.send_request(mw.to_bytes())
+
+	_exchange()
+
+	_check(
+		_client_net.messages.skipped == client_skipped + 1,
+		"the client skips the server's newer message (%d)" % (_client_net.messages.skipped - client_skipped)
+	)
+	_check(
+		_server_net.messages.skipped == server_skipped + 1,
+		"and the server skips the client's (%d)" % (_server_net.messages.skipped - server_skipped)
+	)
+	_check(
+		_server_net.stats.decode_failures == 0 and _client_net.stats.decode_failures == 0,
+		"and neither counts it as a decode failure"
+	)
+
+	# No ticks here: every later section is timed from the join, and they are what "the
+	# game goes on" means -- all of them run over these two mismatched schemas.
+	_check(
+		_server_bridge.player_for_peer(CLIENT_PEER) == SESSION,
+		"the client is still seated"
+	)
+
+	# A client one release ahead that REQUIRES something this server does not have.
+	var refusals: Array = []
+	var on_refused := func(peer: int, err: DotError) -> void: refusals.append([peer, err])
+	_server_net.peer_schema_refused.connect(on_refused)
+
+	var strict := DotNetMessageRegistry.new()
+	strict.register(&"skew.vital", SkewVital)
+	strict.seal()
+	var refused := _server_net.receive(strict.schema_payload(), 99)
+	_check(
+		not refused.ok and refused.code() == DotError.CODE_VERSION,
+		"a client that cannot play with this game's messages is refused as a version problem"
+	)
+	_check(
+		refusals.size() == 1 and int(refusals[0][0]) == 99,
+		"on the signal a host disconnects it from"
+	)
+	var said: DotError = refusals[0][1] if refusals.size() == 1 else null
+	_check(
+		said != null and said.message == "This server's game needs a newer game client.",
+		"with a sentence a player can act on",
+		said.message if said != null else ""
+	)
+	_check(
+		said != null and said.detail.contains("skew.vital") and said.detail.contains(String(_server_net.messages.required_names()[0])),
+		"naming both what the client lacks and what it requires that this server lacks",
+		said.detail if said != null else ""
+	)
+
+	_server_net.peer_schema_refused.disconnect(on_refused)
+	_server_net.messages.forget_peer(99)
+	_finished()
 
 
 func _make_manager(

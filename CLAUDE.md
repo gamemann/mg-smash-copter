@@ -62,7 +62,7 @@ assets/kenney/      eight CC0 models and two atlases
 assets/{blaster-kit,melee,arms}/  the weapon pack's own art, vendored
 textures/prototype/ six CC0 prototype textures, one per role
 scenes/             sc_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (205), dedicated (69), headless_net (186)
+examples/           headless_run (205), dedicated (69), headless_net (197)
 tools/              shot.gd/.tscn/.sh — render a frame and look at it; any --sc-* is config
                     net_shot.gd/.tscn — `shot.sh --view=walk`: a CONNECTED client running,
                     rendered and measured (key to motion, corrections, eye speed per frame)
@@ -221,6 +221,10 @@ These are separate from the list above because none of them can happen until the
 
 **The weapons replicate as a counter, never as an event per shot.** An RPC per shot needs a reliable channel for something worthless if it arrives late, costs a packet per shot per watcher, and desynchronises from the state it belongs with — so a watcher sees the muzzle flash of a weapon the same snapshot says has been holstered. A four-bit counter inside the snapshot cannot do any of those: a watcher who missed a snapshot sees it jump by two and plays one flash instead of two, which is the correct amount of wrong. The magazine and the reserve are owner-only, because exact ammunition is information an opponent should not have.
 
+**`headless_net` runs two BUILDS, not one** (2026-09-26). The server and the client each register an optional message type the other has never heard of before the seal, and every section after "two builds with different message types share the wire" plays over that: the tables cross as the join happens, each end skips the other's newer message without disturbing the next, and a client missing this game's required types (or requiring one this server lacks) is refused with dot-net's sentence. Armed by making the server's extra type required, which fails the schema comparison at once. It found nothing in the game, which is the point: the game's two types are required, everything newer can be optional, and a published pack's server half now talks to a client built from a different dot-net.
+
+**A client disconnected mid-round freed its bodies under the bridge**, and a queued `PROP_GONE` then cast a freed object (`_apply_prop_gone`), as did `_forget_platforms`: three `SCRIPT ERROR`s on a run that exited 0. Found by dot-server-deploy's `smash_client`, whose last section is the first thing to disconnect a client out of the middle of a round. Both check `is_instance_valid` before the cast now.
+
 **`examples/headless_net.tscn` is the real path minus the socket.** Two worlds, two managers, two bridges and two links with the RPC replaced by a callable — so the encoders, the seal, the snapshot build, the prediction and the reconciliation all run. The client is deliberately given a different tick rate and a different field than the server, because one process has one engine rate and one default configuration: two halves that agree by construction make every assertion that they agree pass for the wrong reason. Four of the findings above came from it, and it cannot see Godot's own RPC routing — that is what `dedicated.tscn` and a real client are for.
 
 **The snapshot rate is thirty, against the twenty mg-buses-from-hell uses.** Almost nothing here is predicted and the one thing a player has to read continuously is the lean of the floor they are standing on, which arrives only in a snapshot. At twenty, a platform's tilt updates in visible steps — and a step in the surface under your feet reads as the game stuttering.
@@ -315,7 +319,7 @@ find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read
 done
 godot --headless --path . res://examples/headless_run.tscn   # 27 sections, 205 checks
 godot --headless --path . res://examples/dedicated.tscn      # 10 sections, 69 checks
-godot --headless --path . res://examples/headless_net.tscn   # 19 sections, 186 checks
+godot --headless --path . res://examples/headless_net.tscn   # 20 sections, 197 checks
 tools/shot.sh --view=field
 tools/shot.sh --view=lean
 tools/shot.sh --view=copter

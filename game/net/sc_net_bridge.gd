@@ -1539,6 +1539,11 @@ func _forget_platforms() -> void:
 	for net_id in _bodies.keys():
 		var behaviour: Variant = _bodies[net_id]
 
+		# Freed with the scene on a disconnect; see `_apply_prop_gone`.
+		if not is_instance_valid(behaviour):
+			_bodies.erase(net_id)
+			continue
+
 		if not (behaviour is ScPlatformNet):
 			continue
 
@@ -1775,9 +1780,18 @@ func _apply_prop_gone(reader: DotNetReader) -> void:
 		return
 
 	var net_id := int(info["net_id"])
-	var behaviour: ScPropNet = _bodies.get(net_id) as ScPropNet
+	# [b]Checked for life before it is cast.[/b] A client being disconnected frees its
+	# scene with the bridge's entries still in `_bodies`, and an event already queued then
+	# names a body that is gone -- casting a freed object is a script error, not a null.
+	# Found by dot-server-deploy's `smash_client`, the first suite to disconnect a client
+	# out of the middle of a round.
+	var entry: Variant = _bodies.get(net_id)
 	_bodies.erase(net_id)
 
+	if entry == null or not is_instance_valid(entry):
+		return
+
+	var behaviour := entry as ScPropNet
 	if behaviour == null:
 		return
 
