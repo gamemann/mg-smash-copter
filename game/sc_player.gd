@@ -247,10 +247,10 @@ static func tunables_for(config: ScConfig, active: ScSpecials.Active) -> DotFpsT
 ## The clear air a running player crosses in one jump, landing [param rise] metres
 ## higher than they left, in metres.
 ##
-## [b]Read off [method tunables_for] rather than off three copied constants.[/b] game-arena
-## and game-playground each carry the same arithmetic over their own copies of the
-## numbers; here the run speed, the gravity and the apex come from the one function the
-## controller itself is built from, so a cvar that shortens the jump shortens this too.
+## [b]Read off [method tunables_for] rather than off three copied constants, and worked
+## out by [method DotFpsTunables.jump_reach] rather than by a copy of its arithmetic.[/b]
+## The run speed, the gravity and the apex come from the one function the controller
+## itself is built from, so a cvar that shortens the jump shortens this too.
 ##
 ## [b]The landing height is the whole point.[/b] The airtime everybody writes down is the
 ## time to fall back to the height you jumped FROM, and on this map the height you jump from
@@ -259,16 +259,7 @@ static func tunables_for(config: ScConfig, active: ScSpecials.Active) -> DotFpsT
 ## [param rise], and it is measured by the suite from [ScPlatforms]' own model rather than
 ## guessed. Returns 0.0 for a rise no jump clears at all.
 static func jump_reach(config: ScConfig, rise: float, p_active: ScSpecials.Active = null) -> float:
-	var t := tunables_for(config, p_active)
-	var launch := sqrt(2.0 * t.gravity * t.jump_height)
-	var remaining := launch * launch - 2.0 * t.gravity * rise
-
-	if remaining < 0.0:
-		return 0.0
-
-	# The DESCENDING root. The ascending one is the same height on the way up, which is a
-	# shorter jump landing on the near lip rather than the far one.
-	return t.max_speed * (launch + sqrt(remaining)) / t.gravity
+	return tunables_for(config, p_active).jump_reach(rise)
 
 
 ## Registers the movement actions, and binds the slow walk to shift.
