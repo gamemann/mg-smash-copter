@@ -30,6 +30,7 @@ const ScLayouts := preload("../game/sc_layouts.gd")
 ## tools/shot.sh --view=bridge    # a bridge leant on at one end, from beside it
 ## tools/shot.sh --view=beacon    # an admin's beacon on a stand-in, from across the field
 ## tools/shot.sh --view=blind     # the local player's own eyes, blinded, through the real HUD
+## tools/shot.sh --view=spectate  # the local player, out, through the camera the server gave them
 ## [/codeblock]
 
 # No `const CHANNEL`: this is a command-line tool, and what it says is its output (`print`),
@@ -72,6 +73,18 @@ func _run() -> void:
 		if me != null:
 			me.set("blinded", true)
 		for _i in range(40):
+			await get_tree().process_frame
+	elif game != null and view == "spectate":
+		# Off the edge, through the same fall check a real one goes through, and then long
+		# enough for the death camera to hand over. What is drawn is the client's own
+		# `_process` putting its camera where `ScSpectate` says — nothing here places one.
+		var out_of_it: Node = client.get("player")
+		if out_of_it != null:
+			var at: Vector3 = (out_of_it.get("controller") as DotFpsController).state.position
+			out_of_it.call("place_at", Vector3(at.x, game.config.kill_height - 5.0, at.z), 0.0)
+		var waited := 0.0
+		while waited < 2.4:
+			waited += get_process_delta_time()
 			await get_tree().process_frame
 	elif game != null and view != "eyes":
 		await _place_camera(game, view)

@@ -5,6 +5,7 @@ const ScNetBridge := preload("../game/net/sc_net_bridge.gd")
 const ScNetCommand := preload("../game/net/sc_net_command.gd")
 const ScPlatformNet := preload("../game/net/sc_platform_net.gd")
 
+const ScAudio := preload("../game/sc_audio.gd")
 const ScClient := preload("../game/sc_client.gd")
 const ScConfig := preload("../game/sc_config.gd")
 const ScContent := preload("../game/sc_content.gd")
@@ -40,8 +41,8 @@ const ScSpecials := preload("../game/sc_specials.gd")
 ## real client is a separate program with its own export. Make them disagree, and let HELLO
 ## and LAYOUT correct it.
 
-const SECTIONS := 16
-const CHECKS := 161
+const SECTIONS := 19
+const CHECKS := 186
 
 ## Who the client is, on both ends.
 const CLIENT_PEER := 7
@@ -120,6 +121,7 @@ func _run() -> void:
 		await _test_a_platform_collapses_across_the_wire()
 		await _test_props_arrive()
 		await _test_moving()
+		await _test_the_local_player_is_predicted()
 		await _test_somebody_else_is_drawn()
 		await _test_the_phases()
 		await _test_a_weapon_crosses()
@@ -127,6 +129,8 @@ func _run() -> void:
 		await _test_chat_crosses()
 		await _test_a_lossy_link()
 		await _test_blind_and_beacon()
+		await _test_what_is_heard_arrives()
+		await _test_somebody_out_watches()
 		await _test_leaving()
 
 	print("")
@@ -333,6 +337,34 @@ func _test_the_wire() -> void:
 
 	var asked := ScEvents.read_ask_team(_reader(ScEvents.write_ask_team(5)))
 	_check(bool(asked["ok"]) and int(asked["team"]) == 5, "and a request for a side")
+
+	# The death position is the field dot-spectate's own wire leaves out; see
+	# `ScEvents.write_spectate`. A mirror without it puts the death camera in the cannon.
+	var drop := Vector3(-12.25, 44.0, 30.5)
+	var view := ScEvents.read_spectate(_reader(ScEvents.write_spectate(
+		SESSION, DotSpectatorView.Mode.DEATH_CAM, OTHER_SESSION, 0, drop
+	)))
+	_check(
+		bool(view["ok"]) and int(view["viewer"]) == SESSION
+			and int(view["mode"]) == DotSpectatorView.Mode.DEATH_CAM
+			and int(view["target"]) == OTHER_SESSION and int(view["killer"]) == 0
+			and (view["death_at"] as Vector3).distance_to(drop) < 0.01,
+		"a spectator's view decodes, with where they went down"
+	)
+
+	var steps: Array[int] = []
+	for direction in [-1, 0, 1]:
+		var step := ScEvents.read_ask_spectate(_reader(ScEvents.write_ask_spectate(direction)))
+		steps.append(int(step["direction"]) if bool(step["ok"]) else 99)
+	_check(str(steps) == "[-1, 0, 1]", "and a request for the previous, the camera and the next",
+		str(steps))
+
+	var landed := ScEvents.read_impact(_reader(ScEvents.write_impact(at, 2, 3150.0)))
+	_check(
+		bool(landed["ok"]) and (landed["position"] as Vector3).distance_to(at) < 0.01
+			and int(landed["outcome"]) == 2 and absf(float(landed["impulse"]) - 3150.0) < 10.0,
+		"an impact decodes where, what it did and how hard"
+	)
 
 	# [b]A reader past its end returns plausible zeros rather than failing.[/b] dot-net
 	# shipped with exhaustion that was not sticky, so a decoder that skipped the `ok` check
@@ -858,6 +890,174 @@ func _test_moving() -> void:
 		behaviour != null and (behaviour as Node).get("last_move") != null
 			and (behaviour.get("last_move") as DotFpsCommand).is_pressed(ScNetCommand.BUTTON_FIRE),
 		"a button the client holds reaches the server"
+	)
+
+	_finished()
+
+
+# --- The local player is predicted -------------------------------------------
+
+## [b]This client's own player is predicted, and nobody else is.[/b]
+##
+## Until 2026-09-25 `ScNetBridge._apply_join` mirrored every player with owner 0, this
+## client's own included, so `is_owner` was false for the local player, `predicted()` was
+## empty, and `client_tick` simulated nobody: the player moved only when a snapshot came
+## back, a round trip behind the keys, and the camera — drawn from `render_state`, a blend
+## against a previous tick the controller never recorded — lurched between wherever the
+## player last teleported and wherever the server had them. "A client moves itself and the
+## server agrees" passed throughout, because a client adopting every snapshot also agrees
+## with the server, and its correction rate was zero because the predictor never ran.
+##
+## So these assert the MECHANISM rather than the agreement: who owns the entity, what the
+## registry predicts, that a key moves the player in the tick it is pressed with no snapshot
+## in between, and that a move the client could not know about is corrected and converges.
+## mg-buses-from-hell had the same line and found it first.
+func _test_the_local_player_is_predicted() -> void:
+	_section("the local player is predicted, and nobody else is")
+
+	var client_player: ScPlayer = _client_game.players.get(ScNetBridge.player_key(SESSION))
+	var server_player: ScPlayer = _server_game.players.get(ScNetBridge.player_key(SESSION))
+	var mine := _identity_of(client_player)
+
+	if mine == null or server_player == null:
+		_check(false, "the client has an identity for its own player")
+		for _i in range(9):
+			_check(false, "(skipped: no local identity)")
+		_finished()
+		return
+
+	_check(true, "the client has an identity for its own player")
+	_check(
+		mine.owner_peer_id == _client_net.local_peer_id and mine.is_owner,
+		"which this client owns",
+		"owner %d, local peer %d, is_owner %s" % [
+			mine.owner_peer_id, _client_net.local_peer_id, mine.is_owner
+		]
+	)
+
+	var predicted := _client_net.registry.predicted()
+	_check(
+		mine.is_predicted() and predicted.has(mine),
+		"and predicts: the registry's predicted set holds it",
+		"%d predicted" % predicted.size()
+	)
+
+	# The stand-in is somebody else's, and a client predicting it would be simulating a
+	# person whose keys it never had.
+	var theirs := _identity_of(
+		_client_game.players.get(_stand_in.player_id) if _stand_in != null else null
+	)
+	_check(
+		theirs != null and not theirs.is_owner and not theirs.is_predicted()
+			and not predicted.has(theirs) and predicted.size() == 1,
+		"and nobody else is: one predicted, and not the stand-in",
+		"%d predicted of %d players" % [predicted.size(), _client_game.players.size()]
+	)
+
+	# On a standing deck's middle, facing along +X, and still: the next tick starts from
+	# agreement. An earlier section ran this player a long way and collapsed a deck.
+	var deck = null
+	for index in range(_server_game.platforms.count()):
+		var candidate = _server_game.platforms.deck_at(index)
+		if candidate != null and candidate.is_standing():
+			deck = candidate
+			break
+	server_player.place_at(deck.centre + Vector3(0.0, 1.2, 0.0), 0.0)
+	await _steps(40)
+
+	# [b]One tick by hand, measured between the client's tick and the flush that would
+	# carry anything back.[/b] The server has already simulated this tick without the
+	# command — it is stamped INPUT_LEAD ahead — so any movement here is the client's own.
+	_tick += 1
+	var _t := _client_net.clock.advance(1.0 / float(maxi(_client_game.tick_rate, 1)))
+	_server_bridge.server_tick(_tick)
+	_flush()
+
+	var forward := DotFpsCommand.new()
+	forward.move = Vector2(0.0, 1.0)
+	forward.yaw = 0.0
+
+	var shown_before := client_player.global_position
+	var server_before := server_player.controller.state.position
+	_client_bridge.client_tick(_tick + INPUT_LEAD, forward)
+	var shown_after := client_player.global_position
+
+	_check(
+		shown_after.distance_to(shown_before) > 0.005,
+		"a key moves the player on the client in the tick it is pressed",
+		"%.4f m" % shown_after.distance_to(shown_before)
+	)
+	_check(
+		server_player.controller.state.position.distance_to(server_before) < 0.0001,
+		"before the server has simulated it, and before any snapshot",
+		"server moved %.4f m" % server_player.controller.state.position.distance_to(server_before)
+	)
+
+	_flush()
+	await get_tree().physics_frame
+
+	# A short straight run, then stop. Printed rather than asserted: it is the number to
+	# watch, and positive is the client drawing the player AHEAD of the server along the run,
+	# which is what prediction with an input lead looks like.
+	var before := _client_net.predictor.describe()
+	await _steps(30, forward)
+	var lead := (client_player.controller.state.position - server_player.controller.state.position).dot(Vector3.FORWARD)
+	var after := _client_net.predictor.describe()
+	print("        running: %d replays, %d corrections; client %+.2f m from the server along the run" % [
+		int(after["replays"]) - int(before["replays"]),
+		int(after["corrections"]) - int(before["corrections"]),
+		lead,
+	])
+
+	await _steps(30)
+	_check(
+		client_player.global_position.distance_to(server_player.controller.state.position) < 0.05,
+		"stopped, the client shows the player where the server has them",
+		"%.3f m apart" % client_player.global_position.distance_to(
+			server_player.controller.state.position
+		)
+	)
+
+	# [b]A disagreement the client cannot know about[/b]: an admin puts the player somewhere
+	# on the server. The client predicted standing still, so the next snapshot is a
+	# correction — and the proof that the predictor RUNS, rather than the client simply
+	# adopting what it is sent, is that its correction count moves.
+	var corrected_before := int(_client_net.predictor.describe()["corrections"])
+	var moved_to := server_player.controller.state.position + Vector3(1.5, 0.0, 0.0)
+	server_player.place_at(moved_to, server_player.controller.state.yaw)
+	await _steps(30)
+
+	var corrected := int(_client_net.predictor.describe()["corrections"]) - corrected_before
+	_check(
+		corrected > 0,
+		"a move the client did not predict is corrected",
+		"%d corrections" % corrected
+	)
+	_check(
+		client_player.global_position.distance_to(server_player.controller.state.position) < 0.05
+			and client_player.controller.state.position.distance_to(moved_to) < 0.2,
+		"and converges on where the server put them",
+		"%.3f m apart, %.3f m from the teleport" % [
+			client_player.global_position.distance_to(server_player.controller.state.position),
+			client_player.controller.state.position.distance_to(moved_to),
+		]
+	)
+
+	# [b]Once the floor has settled, and not before.[/b] Moving somebody a metre and a half
+	# across a platform moves its load, so the platform swings to a new lean over the next
+	# couple of seconds — and a client draws that lean from snapshots it runs INPUT_LEAD
+	# ticks ahead of, so a player standing on a floor that is still moving is corrected by a
+	# centimetre now and then (the epsilon is one). That is the floor being the server's, as
+	# it must be; the first version of this check measured the thirty ticks straight after the
+	# move and failed one run in two on exactly that. Two seconds is the spring's damping
+	# taking the swing down to a twentieth.
+	await _steps(128)
+	var settled := int(_client_net.predictor.describe()["corrections"])
+	await _steps(30)
+	_check(
+		int(_client_net.predictor.describe()["corrections"]) == settled,
+		"and then stays converged: no correction while nothing disagrees",
+		"%d more" % (int(_client_net.predictor.describe()["corrections"]) - settled)
 	)
 
 	_finished()
@@ -1478,6 +1678,150 @@ func _test_blind_and_beacon() -> void:
 	_check(not absent.ok, "a blind on nobody is refused rather than ignored")
 
 	services.free()
+	_finished()
+
+
+## The two things a client makes a noise about that it could not have seen for itself.
+##
+## [b]A landing exists only on the server[/b] — a client runs no platform model and its
+## props are frozen mirrors — so the IMPACT event is the only way it hears one. And the
+## cannon's bang is a prop that ARRIVED at the muzzle, which is only true if the position a
+## client is told is the one the prop was fired from rather than where it had got to.
+func _test_what_is_heard_arrives() -> void:
+	_section("what a client hears about arrives")
+
+	var arrived: Array[Vector3] = []
+	_client_bridge.prop_arrived.connect(func(at: Vector3, vehicle: bool) -> void:
+		if not vehicle:
+			arrived.append(at)
+	)
+	var landed: Array[Vector3] = []
+	_client_bridge.impact_received.connect(
+		func(at: Vector3, _outcome: int, _impulse: float) -> void: landed.append(at)
+	)
+
+	var _fired := _server_game.cannon.fire(_server_game.round_elapsed, _server_game.active)
+	await _steps(2)
+
+	var muzzle := _client_game.arena.muzzle()
+	_check(
+		not arrived.is_empty() and arrived[0].distance_to(muzzle) < ScAudio.MUZZLE_REACH,
+		"a prop the cannon fires reaches the client at the mouth of the client's own tube",
+		"%.2f m from it" % (arrived[0].distance_to(muzzle) if not arrived.is_empty() else INF)
+	)
+
+	# A platform still standing: an earlier section took one down on purpose, and a landing
+	# on a platform that has gone is a landing on nothing, which is rightly not sent.
+	var index := -1
+	for i in range(_server_game.platforms.count()):
+		if _server_game.platforms.deck_at(i).is_standing():
+			index = i
+			break
+
+	var deck := _server_game.platforms.deck_at(maxi(index, 0))
+	var hit := deck.centre + Vector3(2.0, 0.0, 1.0)
+	var outcome := _server_game.platforms.report_impact(maxi(index, 0), 30.0, 10.0, hit)
+	_exchange()
+	_check(
+		outcome == ScPlatforms.Impact.WOBBLE and not landed.is_empty()
+			and landed[0].distance_to(hit) < 0.05,
+		"and a landing on a platform is told to the client, where it landed",
+		"%s, %d heard" % [ScPlatforms.Impact.keys()[outcome], landed.size()]
+	)
+
+	_finished()
+
+
+## Somebody who is out is told where to look, by the server, and nobody else is.
+##
+## [b]The policy is the server's and the camera is the client's.[/b] The client's world
+## runs a mirror, and what crosses is one `SPECTATE` event per decision, to the one peer it
+## belongs to. What this asserts is the end state a player would see: the death camera over
+## the drop rather than in the floor, a team-mate's eyes afterwards drawn from the client's
+## OWN copy of that team-mate, and a refusal that comes back as words.
+func _test_somebody_out_watches() -> void:
+	_section("somebody who is out is told where to look")
+
+	var views: Array[int] = []
+	_client_bridge.spectate_received.connect(
+		func(_viewer: int, mode: int, _target: int) -> void: views.append(mode)
+	)
+	var notices: Array[String] = []
+	_client_bridge.notice_received.connect(func(text: String) -> void: notices.append(text))
+
+	# A team-mate for the client under test, so that being out leaves somebody on their own
+	# side to watch — and so that the round does not simply end, which a side with nobody
+	# alive does.
+	var theirs: ScPlayer = _server_game.players.get(ScNetBridge.player_key(SESSION))
+	var mate := _server_bridge.add_bot("Mate", theirs.team if theirs != null else 2)
+	_check(mate != null and mate.team == theirs.team, "a team-mate is seated beside them")
+	await _steps(6)
+
+	var me := ScNetBridge.player_key(SESSION)
+	_check(not _client_game.spectate.is_spectating(me), "nobody playing is watching anything")
+
+	var went := theirs.controller.state.position
+	theirs.place_at(Vector3(went.x, _server_game.config.kill_height - 5.0, went.z), 0.0)
+	await _steps(3)
+
+	_check(not theirs.is_alive(), "the client's player fell and is out on the server")
+	_check(
+		views.has(DotSpectatorView.Mode.DEATH_CAM) and _client_game.spectate.is_spectating(me),
+		"the client is told, and its own mirror now says it is watching"
+	)
+
+	var drop := _client_game.spectate.camera_for(me)
+	_check(
+		_client_game.spectate.mode_of(me) == DotSpectatorView.Mode.DEATH_CAM
+			and drop.origin.y > _server_game.config.deck_height,
+		"the death camera is up over the drop, not at the floor they hit",
+		"y = %.1f" % drop.origin.y
+	)
+
+	await _steps(int(ceilf(1.6 * float(_server_game.tick_rate))))
+
+	var mate_key := mate.player_id
+	_check(
+		_client_game.spectate.mode_of(me) == DotSpectatorView.Mode.FIRST_PERSON
+			and _client_game.spectate.watching(me) == mate_key,
+		"and then hands over to the team-mate's eyes",
+		"%s on %s" % [
+			DotSpectatorView.Mode.keys()[_client_game.spectate.mode_of(me)],
+			String(_client_game.spectate.watching(me)),
+		]
+	)
+
+	# From the CLIENT's copy of the team-mate: nothing about the camera crossed the wire but
+	# who it is on, so it has to be where this client draws them.
+	var copy: ScPlayer = _client_game.players.get(mate_key)
+	var eye := _client_game.spectate.camera_for(me).origin
+	var drawn := copy.global_position + Vector3(0.0, ScPlayer.EYE_HEIGHT, 0.0) \
+		if copy != null else Vector3.INF
+	_check(eye.distance_to(drawn) < 0.05, "at the eyes this client draws them with",
+		"%.3f m" % eye.distance_to(drawn))
+
+	# The other side is somebody the policy forbids, so the camera key is answered in words.
+	_client_bridge.ask_spectate(0)
+	_exchange()
+	_exchange()
+	_check(
+		notices.any(func(t: String) -> bool: return t.contains("through their eyes")),
+		"a camera the server's policy refuses comes back as a notice",
+		" | ".join(notices)
+	)
+	_check(
+		_client_game.spectate.mode_of(me) == DotSpectatorView.Mode.FIRST_PERSON,
+		"and the camera stays where the server put it"
+	)
+
+	# And the server's own view of it, which is the one that decided.
+	_check(
+		not _server_game.spectate.manager.may_watch(String(me), String(_stand_in.player_id)).ok,
+		"the other side's stand-in is somebody this server will not let them watch"
+	)
+
+	_server_bridge.remove_player(ScNetBridge.session_of(mate_key))
+	_exchange()
 	_finished()
 
 

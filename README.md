@@ -15,15 +15,15 @@ I intend on reviewing code, testing, and editing documentation regularly. If you
 
 Two to six teams stand on platforms balanced on single pillars, forty metres up, while a cannon in the middle throws things at them. Whoever is still up when the clock runs out is thrown into a corner of the sky with a weapon they did not choose, and the last team standing wins.
 
-It is a first- and third-person multiplayer minigame built on the `dot-*` addon family: [dot-props](https://github.com/modcommunity/dot-props) for everything the cannon throws, [dot-vehicle](https://github.com/modcommunity/dot-vehicle) for the chopper, [dot-combat](https://github.com/modcommunity/dot-combat) for health and hit registration, [dot-match](https://github.com/modcommunity/dot-match) for the round and the sides, [dot-player-controller](https://github.com/modcommunity/dot-player-controller) for the movement, [dot-net](https://github.com/modcommunity/dot-net) for the replication, [dot-game](https://github.com/modcommunity/dot-game) for the server wiring and [zee-dot-weapons](https://github.com/gamemann/zee-dot-weapons) for the twenty-seven weapons the second half is fought with.
+It is a first- and third-person multiplayer minigame built on the `dot-*` addon family: [dot-props](https://github.com/modcommunity/dot-props) for everything the cannon throws, [dot-vehicle](https://github.com/modcommunity/dot-vehicle) for the chopper, [dot-combat](https://github.com/modcommunity/dot-combat) for health and hit registration, [dot-match](https://github.com/modcommunity/dot-match) for the round and the sides, [dot-player-controller](https://github.com/modcommunity/dot-player-controller) for the movement, [dot-net](https://github.com/modcommunity/dot-net) for the replication, [dot-game](https://github.com/modcommunity/dot-game) for the server wiring, [dot-spectate](https://github.com/modcommunity/dot-spectate) for where you look once you are out, [dot-audio](https://github.com/modcommunity/dot-audio) for the noise, [dot-stats](https://github.com/modcommunity/dot-stats) and [dot-achievements](https://github.com/modcommunity/dot-achievements) for what you keep, and [zee-dot-weapons](https://github.com/gamemann/zee-dot-weapons) for the twenty-seven weapons the second half is fought with.
 
 ## Running it
 
 ```bash
 godot --path .                                                # play it, alone, against stand-ins
-godot --headless --path . res://examples/headless_run.tscn    # the simulation, 150 checks
-godot --headless --path . res://examples/dedicated.tscn       # as a real server, 61 checks
-godot --headless --path . res://examples/headless_net.tscn     # over the wire, 145 checks
+godot --headless --path . res://examples/headless_run.tscn    # the simulation, 204 checks
+godot --headless --path . res://examples/dedicated.tscn       # as a real server, 69 checks
+godot --headless --path . res://examples/headless_net.tscn     # over the wire, 186 checks
 tools/shot.sh --view=field                                    # render a frame and look at it
 tools/shot.sh --view=jump --sc-layout-ids=checker             # the jump a layout means
 ```
@@ -44,6 +44,8 @@ The same client plays alone and plays online: with no server link in the registr
 | **F5** | swap between first and third person |
 | **1–5** | weapon slots, in the showdown |
 | **Y / U / V** | say something, say it to your side, hold to talk |
+| **Left / right click, when out** | the next or previous person you may watch |
+| **F5, when out** | through their eyes, or behind them if the server allows it |
 
 ## Shift is a brake
 
@@ -69,6 +71,24 @@ A third of rounds start with one, and one can also arrive part way through a rou
 `barrage` · `heavy` · `feather` (low gravity) · `slick` (ice) · `gale` (wind) · `quake` · `jelly` (loose pins) · `downpour` · `rush`
 
 Two can overlap and they multiply, which is a legitimate and very funny thing to be in the middle of.
+
+## When you are out
+
+Falling is final until the next round, and you are not left looking at the floor. For a moment the camera hangs over the drop you went down; then it goes behind the eyes of somebody on your own side who is still up, and follows them into the corners if they get there. Left and right click step through whoever else you may watch. When nobody on your side is left, you watch the field — or, in the showdown, the corners — from above.
+
+What you may watch is the server's decision, not your client's. By default it is your own side only, and through their eyes only, because a dead player with a camera on the other corner is a scout for their team on voice. `sc_spectate_camera 0` lets anybody watch anybody, from behind as well; `2` lets nobody watch anything.
+
+## What it sounds like
+
+The cannon is a bang from the middle of the map, and it is the one warning of what is coming that works without looking up. A platform creaks when it is most of the way to coming off its pillar, a landing thumps, a collapse and a barrel boom, and in the showdown every weapon is heard from where it was fired. Your ears are wherever your camera is, so when you are out you hear what the person you are watching hears.
+
+**There are no audio files yet.** Every sound is a stand-in synthesised from a handful of numbers when the client starts, and the catalogue names the file each one should come from: drop `audio/cannon_fire.ogg` in and the cannon uses it, with no code change.
+
+## What you keep
+
+The server counts what this game is actually about — rounds you were still standing at the end of the clock, showdowns won, people put out in the corners, falls, platforms you tipped by standing in the wrong place, and things the cannon landed on your own platform that missed you — and a handful of achievements are rules over those numbers. You are told the moment you earn one. Stand-ins are never counted.
+
+The numbers are kept in memory unless the operator names a directory with `SC_PROGRESS_DIRECTORY`, and reported to the backbone only with `SC_REPORT_PROGRESS` and a credential for it. This game has no accounts yet, so for now what you keep lasts as long as your connection.
 
 ## Layouts
 
@@ -99,6 +119,7 @@ sc_special_chance 60        // most rounds are strange
 sc_bot_spread 2             // sharper stand-ins
 sc_chopper 0                // no chopper on any layout
 sc_min_players 6            // keep six in the round with stand-ins
+sc_spectate_camera 0        // somebody out may watch anybody, not only their own side
 ```
 
 A moderator has dot-moderation's live tools, with this game's meaning for each: `noclip`, `freeze`, `speed`, `gravity`, `god`, `buddha`, `hp`, `slay`, `slap`, `rename`, the teleports, and `blind <player> [on|off|seconds]` and `beacon <player> [on|off]`. A blind blacks out that player's own screen and nobody else's, tilt bar included; a beacon puts a pulsing ring, a column you can see from anywhere and a ping on one player for everybody. Both outlive a round, as god does. `respawn`, `give` and `strip` are refused, and `modtools` says why.
@@ -142,7 +163,8 @@ The map itself is built in code. A grid of squares on pillars, a cylinder in the
 
 - **Nobody draws somebody else's gun.** The weapon state replicates — the slot, the reload, the switch and a use counter — but hanging a world model on a watcher's copy of a player needs a character with a hand mount, and this game draws players as capsules.
 - **Stand-ins fall off more than they shoot.** Two thirds of the deaths in a showdown played by stand-ins are falls. They are four lines of brain with an aim error, which is enough to make an empty server look alive and is not a bot worth fighting. `sc_bot_advance` and `sc_bot_spread` are the two knobs.
-- **No profiles and no avatars.** dot-game reports the missing identity layer and carries on, which is a server where everybody is a guest.
+- **No profiles and no avatars.** dot-game reports the missing identity layer and carries on, which is a server where everybody is a guest — which is also why achievements last only as long as a connection.
+- **No settings screen.** There is no menu at all, so there is nowhere to put a volume slider, a mouse sensitivity or a field of view, and none of the three can be changed yet. The notes say why that is not a settings document with no screen in front of it.
 
 ## Licence
 

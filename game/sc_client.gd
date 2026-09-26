@@ -1,5 +1,6 @@
 extends Node
 
+const ScAudio := preload("sc_audio.gd")
 const ScClientChat := preload("sc_client_chat.gd")
 const ScNetBridge := preload("net/sc_net_bridge.gd")
 const ScNetCommand := preload("net/sc_net_command.gd")
@@ -58,6 +59,9 @@ var player: ScPlayer = null
 var camera: Camera3D = null
 var hud: ScHud = null
 var chat: ScClientChat = null
+
+## What the game sounds like. See [ScAudio].
+var audio: ScAudio = null
 
 ## The weapons in this player's own hands, once the showdown has started.
 ##
@@ -132,6 +136,7 @@ func _ready() -> void:
 
 	_build_hud()
 	_build_chat()
+	_build_audio()
 
 	if _offline:
 		_start_offline()
@@ -168,6 +173,14 @@ func _start_offline() -> void:
 		bot.is_bot = true
 
 	_adopt(game.add_player(&"local", "You", 1, true))
+	_hear_the_world()
+
+	# Offline the world counts for the player at this keyboard, so it is the world that says
+	# what they earned. Connected, the same line arrives as a notice from the server.
+	game.achievement_earned.connect(func(id: StringName, title: String, points: int) -> void:
+		if player != null and id == player.player_id and chat != null:
+			chat.say_locally("Achievement: %s (+%d)" % [title, points], Color(0.98, 0.84, 0.40))
+	)
 	game.start()
 
 	# No bridge: the box still opens and still echoes, because a chat box that does nothing
@@ -229,6 +242,7 @@ func _build_netcode() -> DotResult:
 	bridge.death_received.connect(_on_death)
 	bridge.collapse_received.connect(_on_collapse)
 	bridge.armed_received.connect(_on_armed)
+	_hear_the_wire()
 	# [b]Where a refusal is drawn.[/b] The server answers a gagged or too-fast line with a
 	# notice to that one player, and a notice nothing draws is the server explaining itself
 	# to nobody — which is indistinguishable from chat being broken.
@@ -303,6 +317,8 @@ func _on_seat_changed(session_id: int, seated: bool) -> void:
 
 
 func _on_phase(phase: int) -> void:
+	_hear_phase(phase)
+
 	match phase:
 		ScGame.Phase.HANDOVER:
 			hud.shout("CORNERS — hold your fire", 3.0)
@@ -318,6 +334,9 @@ func _on_special(_id: StringName, starting: bool, blurb: String) -> void:
 	if not starting:
 		return
 
+	if audio != null:
+		var _heard := audio.on_special()
+
 	hud.shout(blurb, 4.0)
 
 	if chat != null:
@@ -328,6 +347,9 @@ func _on_special(_id: StringName, starting: bool, blurb: String) -> void:
 
 
 func _on_round(number: int, began: bool, winner: int) -> void:
+	if audio != null:
+		var _heard := audio.on_round(began)
+
 	if began:
 		hud.shout("ROUND %d" % number, 2.4)
 		return
@@ -341,11 +363,14 @@ func _on_round(number: int, began: bool, winner: int) -> void:
 
 
 func _on_death(session_id: int, _by: int, why: StringName) -> void:
+	var id := ScNetBridge.player_key(session_id)
+	var who: ScPlayer = game.players.get(id)
+
+	_hear_death(who, why)
+
 	if chat == null:
 		return
 
-	var id := ScNetBridge.player_key(session_id)
-	var who: ScPlayer = game.players.get(id)
 	var name_of := who.display_name if who != null else String(id)
 
 	var line := "%s was shot" % name_of
@@ -367,6 +392,8 @@ func _on_death(session_id: int, _by: int, why: StringName) -> void:
 ## across the map is a thing you look at; one under the platform you are standing on is a
 ## thing you react to, and the difference between them has to be felt rather than read.
 func _on_collapse(index: int, _why: StringName) -> void:
+	_hear_collapse(index)
+
 	if game.effects == null or game.platforms == null:
 		return
 
@@ -377,6 +404,124 @@ func _on_collapse(index: int, _why: StringName) -> void:
 
 	game.effects.viewer_position = camera.global_position if camera != null else Vector3.ZERO
 	game.effects.shake_at(&"collapse", deck.centre, 42.0)
+
+
+# --- What it sounds like -----------------------------------------------------
+
+func _build_audio() -> void:
+	audio = ScAudio.new()
+	audio.name = "Sound"
+	add_child(audio)
+
+	var ready_now := audio.setup()
+
+	if not ready_now.ok:
+		# A game that cannot make a noise still plays; it is the state this one shipped in.
+		DotLog.warn(CHANNEL, "no sound", {"why": ready_now.error.message})
+		remove_child(audio)
+		audio.queue_free()
+		audio = null
+		return
+
+	if game != null and game.arena != null:
+		audio.muzzle = game.arena.muzzle()
+
+
+## Offline: the world IS the authority, so its own signals are what happened.
+##
+## [b]Two sources and one set of sounds.[/b] A connected client hears the same things from
+## the bridge's signals instead (see [method _hear_the_wire]); both call the same [ScAudio]
+## method with the same arguments, so offline and online can only differ in where a fact
+## came from and never in what it sounds like.
+func _hear_the_world() -> void:
+	if audio == null or game == null:
+		return
+
+	game.round_began.connect(func(_n: int, _layout: StringName) -> void:
+		var _heard := audio.on_round(true))
+	game.round_over.connect(func(_n: int, _winner: int) -> void:
+		var _heard := audio.on_round(false))
+	game.phase_changed.connect(_hear_phase)
+	game.special_changed.connect(func(_id: StringName, starting: bool, _blurb: String) -> void:
+		if starting:
+			var _heard := audio.on_special())
+	game.player_died.connect(func(id: StringName, _by: StringName, why: StringName) -> void:
+		_hear_death(game.players.get(id), why))
+	game.platform_collapsed.connect(func(index: int, _why: StringName) -> void:
+		_hear_collapse(index))
+	game.blast.connect(func(at: Vector3, _radius: float) -> void:
+		var _heard := audio.on_blast(at))
+	game.platform_struck.connect(
+		func(_index: int, at: Vector3, impulse: float, outcome: int) -> void:
+			var _heard := audio.on_impact(at, outcome, impulse))
+	game.props.spawned.connect(func(prop: DotPropInstance) -> void:
+		var body := prop.body()
+		if body != null:
+			var _heard := audio.on_prop_appeared(body.global_position))
+	# Everybody else's weapons. A rig is built at every handover and freed at the next
+	# round, so this connects to each new one rather than once.
+	game.player_armed.connect(func(id: StringName, _weapon: StringName) -> void:
+		var armed: ScPlayer = game.players.get(id)
+		if armed == null or armed == player or armed.weapons == null:
+			return
+		armed.weapons.used.connect(func(outcome: DotWeaponOutcome) -> void:
+			if audio != null and is_instance_valid(armed):
+				var _heard := audio.on_weapon(
+					armed.global_position, ZeeWeaponNet.kind_number(outcome.kind)
+				)
+		)
+	)
+
+
+## Connected: the same sounds, from what the server said.
+func _hear_the_wire() -> void:
+	if audio == null or bridge == null:
+		return
+
+	bridge.impact_received.connect(func(at: Vector3, outcome: int, impulse: float) -> void:
+		var _heard := audio.on_impact(at, outcome, impulse))
+	bridge.blast_received.connect(func(at: Vector3, _radius: float) -> void:
+		var _heard := audio.on_blast(at))
+	bridge.prop_arrived.connect(func(at: Vector3, vehicle: bool) -> void:
+		if not vehicle:
+			var _heard := audio.on_prop_appeared(at))
+	bridge.weapon_used_by.connect(func(session_id: int, _times: int, kind: int) -> void:
+		# Your own is heard from your own rig, a round trip sooner. See `_arm_locally`.
+		if session_id == _watch_id:
+			return
+		var who: ScPlayer = game.players.get(ScNetBridge.player_key(session_id))
+		if who != null:
+			var _heard := audio.on_weapon(who.global_position, kind))
+	bridge.notice_received.connect(func(_text: String) -> void:
+		var _heard := audio.deny())
+
+
+func _hear_phase(phase: int) -> void:
+	if audio == null:
+		return
+
+	match phase:
+		ScGame.Phase.HANDOVER:
+			var _heard := audio.on_handover()
+		ScGame.Phase.SHOWDOWN:
+			var _heard := audio.on_showdown()
+
+
+func _hear_death(who: ScPlayer, why: StringName) -> void:
+	if audio == null or who == null:
+		return
+
+	var _heard := audio.on_death(who.global_position, why == ScGame.DIED_FELL, who == player)
+
+
+func _hear_collapse(index: int) -> void:
+	if audio == null or game.platforms == null:
+		return
+
+	var deck = game.platforms.deck_at(index)
+
+	if deck != null:
+		var _heard := audio.on_collapse(deck.centre)
 
 
 func _on_armed(session_id: int, weapon_id: StringName) -> void:
@@ -431,6 +576,15 @@ func _arm_locally() -> void:
 	# actually in hand is the slot, which comes back in the ARMED event and in the player's
 	# own key presses.
 	var _given := weapons.give_everything()
+
+	# Your own shots, from your own rig: a predicted use, heard the tick it happens rather
+	# than when the server's snapshot says it did. At the camera, so it is at full volume.
+	weapons.used.connect(func(outcome: DotWeaponOutcome) -> void:
+		if audio != null and camera != null:
+			var _heard := audio.on_weapon(
+				camera.global_position, ZeeWeaponNet.kind_number(outcome.kind)
+			)
+	)
 
 
 func _disarm_locally() -> void:
@@ -502,6 +656,9 @@ func _place_camera(seated: bool) -> void:
 func toggle_view() -> void:
 	third_person = not third_person
 	_place_camera(player.riding if player != null else false)
+
+	if audio != null:
+		var _heard := audio.click()
 
 	if hud != null:
 		hud.shout("third person" if third_person else "first person", 1.2)
@@ -628,9 +785,17 @@ func _drive_view_model(command: DotFpsCommand) -> void:
 
 
 func _process(delta: float) -> void:
-	var _shown := present_frame(net, game, player, not third_person, delta)
+	var _shown := present_frame(
+		net, game, player, not third_person, delta, -1.0, _watched_through_eyes()
+	)
 
 	if camera == null or player == null:
+		return
+
+	# [b]Before the rig, and instead of it.[/b] The rig below hangs the camera off the
+	# player's own node, and a player who is out is a body at the kill height.
+	if _drive_spectator_camera():
+		_present_effects(delta)
 		return
 
 	# Drawn every FRAME from the controller's own interpolated view, not once per tick.
@@ -675,9 +840,110 @@ func _process(delta: float) -> void:
 			state.crouch_fraction > 0.5
 		)
 
+	_present_effects(delta)
+
+
+func _present_effects(delta: float) -> void:
+	# The ears are wherever the eyes are, which for somebody who is out is the spectator
+	# camera — so a player watching a team-mate hears what that team-mate hears.
+	if audio != null:
+		audio.listen_from(camera.global_position)
+		var _creaked := audio.present(game.platforms, game.config.platform_collapse_lean)
+
 	if game.effects != null:
 		game.effects.viewer_position = camera.global_position
 		game.effects.advance(delta)
+
+
+# --- Watching, once out -----------------------------------------------------
+
+## Whether this client's own player is out and watching somebody.
+func is_spectating() -> bool:
+	return player != null and game != null and game.spectate != null \
+		and game.spectate.is_spectating(player.player_id)
+
+
+## The player whose eyes this camera is behind, so their body is not drawn around it.
+func _watched_through_eyes() -> ScPlayer:
+	if not is_spectating():
+		return null
+
+	var mode := game.spectate.mode_of(player.player_id)
+
+	if mode != DotSpectatorView.Mode.FIRST_PERSON and mode != DotSpectatorView.Mode.FREEZE_CAM:
+		return null
+
+	return game.players.get(game.spectate.watching(player.player_id))
+
+
+## Puts the camera where [ScSpectate] says, and takes it back when a round starts.
+##
+## [b]The camera leaves the player's node while they watch.[/b] Setting a global transform
+## on a camera hung under the chase arm is undone by the arm on its next frame, and one hung
+## under the body is under a body that is not where anything worth seeing is. So it is moved
+## to this node for as long as the player is out and handed back by `_place_camera` — the
+## same call a view swap uses — the moment they are not.
+##
+## Once a FRAME, like the rig: the target's pose is the drawn one, so a camera moved on the
+## tick would step at the tick rate however smoothly the target is drawn.
+func _drive_spectator_camera() -> bool:
+	if not is_spectating():
+		if camera.get_parent() == self:
+			_place_camera(player.riding)
+
+			if view_model != null and is_instance_valid(view_model):
+				view_model.visible = true
+
+		if hud != null:
+			hud.set_watching("")
+
+		return false
+
+	if camera.get_parent() != self:
+		camera.get_parent().remove_child(camera)
+		add_child(camera)
+		camera.current = true
+
+		if _arm != null and is_instance_valid(_arm):
+			_arm.queue_free()
+			_arm = null
+
+	# A view model left on is somebody else's gun drawn in front of the camera.
+	if view_model != null and is_instance_valid(view_model):
+		view_model.visible = false
+
+	var where := game.spectate.camera_for(player.player_id)
+
+	# Identity is dot-spectate's "no answer" — a target it could not find. Holding the last
+	# frame is better than a camera at the world origin, which here is inside the cannon.
+	if where != Transform3D.IDENTITY:
+		camera.global_transform = where
+
+	if hud != null:
+		hud.set_watching(game.spectate.line_for(player.player_id))
+
+	return true
+
+
+## Asks for the next or previous person to watch, or the other camera.
+func spectate_step(direction: int) -> void:
+	if audio != null:
+		var _heard := audio.click()
+
+	if bridge != null:
+		bridge.ask_spectate(direction)
+		return
+
+	if game == null or game.spectate == null or player == null:
+		return
+
+	var moved := game.spectate.step(player.player_id, direction)
+
+	if not moved.ok and chat != null:
+		chat.notice(moved.error.message)
+
+		if audio != null:
+			var _denied := audio.deny()
 
 
 ## Everything a frame draws that a tick does not, in this order: the netcode's
@@ -704,7 +970,8 @@ static func present_frame(
 	own: ScPlayer,
 	first_person: bool,
 	delta: float,
-	alpha: float = -1.0
+	alpha: float = -1.0,
+	watched: ScPlayer = null
 ) -> int:
 	var networked := p_net != null and p_net.is_running()
 
@@ -730,7 +997,9 @@ static func present_frame(
 		if team >= 1 and team <= ScGame.TEAM_COLOURS.size():
 			colour = ScGame.TEAM_COLOURS[team - 1]
 
-		if body.present_body(mine and first_person, at, colour):
+		# And whoever a spectator is looking out of: a camera inside somebody's head draws the
+		# inside of their head.
+		if body.present_body((mine and first_person) or body == watched, at, colour):
 			shown += 1
 
 		# Every player's beacon, this client's own included — somebody who has been beaconed
@@ -776,7 +1045,11 @@ func _unhandled_input(event: InputEvent) -> void:
 		var key := event as InputEventKey
 
 		if key.physical_keycode == VIEW_KEY:
-			toggle_view()
+			# Out, the key swaps the SPECTATOR's camera, which the server decides.
+			if is_spectating():
+				spectate_step(0)
+			else:
+				toggle_view()
 			return
 
 		# The slots. One to five, which is what the pack uses.
@@ -805,6 +1078,18 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		var button := event as InputEventMouseButton
 
+		# Out, the buttons step through who to watch. Nobody out has a weapon, and a click
+		# that fired nothing and moved nothing is reported as the game having frozen.
+		if is_spectating():
+			_firing = false
+			_alt = false
+
+			if button.pressed and button.button_index == MOUSE_BUTTON_LEFT:
+				spectate_step(1)
+			elif button.pressed and button.button_index == MOUSE_BUTTON_RIGHT:
+				spectate_step(-1)
+			return
+
 		if button.button_index == MOUSE_BUTTON_LEFT:
 			_firing = button.pressed
 		elif button.button_index == MOUSE_BUTTON_RIGHT:
@@ -827,6 +1112,8 @@ func describe() -> Dictionary:
 		"player": player != null,
 		"view": "third" if third_person else "first",
 		"armed": weapons != null,
+		"watching": String(game.spectate.watching(player.player_id))
+			if is_spectating() else "-",
 	}
 
 	if bridge != null:

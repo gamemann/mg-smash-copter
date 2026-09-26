@@ -27,6 +27,10 @@
 /addons/dot_chat
 /addons/dot_voice
 /addons/dot_moderation
+/addons/dot_spectate
+/addons/dot_audio
+/addons/dot_stats
+/addons/dot_achievements
 /addons/zee_weapons
 
 # Exports

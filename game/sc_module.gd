@@ -141,6 +141,7 @@ func _game_load() -> DotResult:
 
 	_wire_chat()
 	_wire_armed(world)
+	_wire_progress(world)
 	_add_tunables(world)
 
 	_bots = add_cvar(
@@ -225,6 +226,12 @@ func _add_tunables(world: ScGame) -> void:
 		func(value: float) -> void: config.weapons_granted = clampi(int(value), 1, 8))
 	_tunable("sc_gravity", config.gravity, "Metres per second squared, for everything",
 		func(value: float) -> void: config.gravity = value)
+	_tunable("sc_spectate_camera", float(config.spectate_camera),
+		"Who somebody who is out may watch: 0 anybody, 1 their own side, 2 nobody",
+		func(value: float) -> void:
+			config.spectate_camera = clampi(int(value), 0, 2)
+			if world.spectate != null:
+				world.spectate.set_force_camera(config.spectate_camera))
 	_tunable("sc_min_players", float(config.minimum_players),
 		"How many players the server keeps in a round with stand-ins",
 		func(value: float) -> void: config.minimum_players = clampi(int(value), 0, 24))
@@ -362,6 +369,23 @@ func _wire_armed(world: ScGame) -> void:
 
 	world.player_armed.connect(func(player_id: StringName, weapon_id: StringName) -> void:
 		bridge.call("announce_armed", player_id, weapon_id)
+	)
+
+
+## An achievement is told to the one person who earned it.
+##
+## [b]As a notice, which a client already draws in its chat box[/b], rather than a new event
+## kind: an unlock is text for one player, which is exactly what a notice is — and a stand-in
+## never earns one, because [ScProgress] does not count them.
+func _wire_progress(world: ScGame) -> void:
+	if bridge == null:
+		return
+
+	world.achievement_earned.connect(func(id: StringName, title: String, points: int) -> void:
+		var peer_id: int = bridge.call("peer_for_player", ScNetBridge.session_of(id))
+
+		if peer_id > 0:
+			bridge.call("notice", peer_id, "Achievement: %s (+%d)" % [title, points])
 	)
 
 

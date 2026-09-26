@@ -91,6 +91,22 @@ signal armed_received(player_id: int, weapon_id: StringName)
 
 signal notice_received(text: String)
 
+## Client side: the server moved this client's own camera. [param mode] is
+## [enum DotSpectatorView.Mode]; the view has already been adopted by the world's mirror.
+signal spectate_received(viewer: int, mode: int, target: int)
+
+## Client side: something landed on a platform. What a client makes a noise about.
+signal impact_received(at: Vector3, outcome: int, impulse: float)
+
+## Client side: somebody else used their weapon [param times] times since the last
+## snapshot. [param kind] is one of `ZeeWeaponNet.KIND_*`. Relayed from that player's own
+## behaviour, because a client builds those one per JOIN and nothing else could find them.
+signal weapon_used_by(session_id: int, times: int, kind: int)
+
+## Client side: a prop or a chopper arrived, at [param at]. What the cannon's bang is heard
+## from — see `ScAudio.on_prop_appeared` for why "arrived at the muzzle" means "fired".
+signal prop_arrived(at: Vector3, vehicle: bool)
+
 ## Somebody pressed Enter. Server side, and the only thing this bridge does with chat.
 ##
 ## [b]The bridge carries chat and decides nothing about it.[/b] Who may say what, on which
@@ -244,7 +260,12 @@ func attach(p_game: Object, p_net: DotNetManager) -> DotResult:
 		game.special_changed.connect(_on_special_changed)
 		game.player_died.connect(_on_player_died)
 		game.platform_collapsed.connect(_on_platform_collapsed)
+		game.platform_struck.connect(_on_platform_struck)
 		game.blast.connect(_on_blast)
+
+		if game.spectate != null:
+			game.spectate.view_changed.connect(_on_spectate_changed)
+
 		_wire_lag_compensation()
 
 	return DotResult.success(true)
@@ -485,7 +506,13 @@ func _build_entity(player: ScPlayer, peer_id: int) -> DotNetIdentity:
 	identity.always_relevant = true
 	player.add_child(identity)
 
-	_behaviours[session_of(player.player_id)] = behaviour
+	var session_id := session_of(player.player_id)
+	_behaviours[session_id] = behaviour
+
+	# Only ever emitted on a mirror, where the snapshot is what says a weapon was used.
+	behaviour.weapon_used.connect(func(times: int, kind: int) -> void:
+		weapon_used_by.emit(session_id, times, kind)
+	)
 	return identity
 
 
@@ -762,6 +789,43 @@ func _on_blast(at: Vector3, radius: float) -> void:
 	_broadcast(ScEvents.Kind.BLAST, ScEvents.write_blast(at, radius))
 
 
+## Everybody hears a landing; nobody is told one that did nothing.
+##
+## [b]An event, because a client cannot see one.[/b] A client runs no platform model and its
+## props are frozen mirrors, so "something just hit that platform hard" exists only on the
+## server — and the sound of it is the one warning a player standing on a different edge of
+## the same platform gets before the lean arrives.
+func _on_platform_struck(_index: int, at: Vector3, impulse: float, outcome: int) -> void:
+	if outcome == ScPlatforms.Impact.NONE:
+		return
+
+	_broadcast(ScEvents.Kind.IMPACT, ScEvents.write_impact(at, outcome, impulse))
+
+
+## A view changed on the server. Told to its owner and to nobody else.
+##
+## [b]To the one peer, because a camera is private.[/b] Who somebody is watching is a fact
+## about them that nobody else has any business knowing — and a stand-in, whose peer is
+## zero, is told nothing, which `_tell` guarantees rather than this.
+func _on_spectate_changed(player_id: StringName) -> void:
+	if game == null or game.spectate == null or game.spectate.manager == null:
+		return
+
+	var session_id := session_of(player_id)
+	var peer_id := peer_for_player(session_id)
+
+	if peer_id <= 0 or not _ready_peers.has(peer_id):
+		return
+
+	var view := game.spectate.manager.view(String(player_id))
+	var target := session_of(StringName(view.target)) if view.target != "" else 0
+	var killer := session_of(StringName(view.killer)) if view.killer != "" else 0
+
+	_tell(peer_id, ScEvents.Kind.SPECTATE, ScEvents.write_spectate(
+		session_id, int(view.mode), target, killer, view.death_position
+	))
+
+
 ## Says what a survivor was handed. Called by the game through the module.
 func announce_armed(player_id: StringName, weapon_id: StringName) -> void:
 	_broadcast(ScEvents.Kind.ARMED, ScEvents.write_armed(session_of(player_id), weapon_id))
@@ -1023,6 +1087,28 @@ func _on_request(message: DotNetMessage) -> void:
 
 			if bool(wanted["ok"]):
 				_switch_team(peer_id, int(wanted["team"]))
+		ScEvents.Ask.SPECTATE:
+			var step := ScEvents.read_ask_spectate(ask.reader())
+
+			if bool(step["ok"]):
+				_spectate_step(peer_id, int(step["direction"]))
+
+
+## Somebody who is out asked to look at somebody else. The server's list, the server's rule.
+##
+## [b]A refusal goes back as a notice rather than being dropped.[/b] "This server only lets
+## you watch your own side" is the answer to a key that did nothing, and a key that silently
+## does nothing is reported as broken.
+func _spectate_step(peer_id: int, direction: int) -> void:
+	var session_id := player_for_peer(peer_id)
+
+	if session_id == 0 or game.spectate == null:
+		return
+
+	var moved: DotResult = game.spectate.step(player_key(session_id), direction)
+
+	if not moved.ok:
+		notice(peer_id, moved.error.message)
 
 
 func _board(peer_id: int) -> void:
@@ -1202,6 +1288,11 @@ func ask_team(team: int) -> void:
 	_ask(ScEvents.Ask.TEAM, ScEvents.write_ask_team(team))
 
 
+## Out, and asking to watch somebody else: +1 next, -1 previous, 0 the other camera.
+func ask_spectate(direction: int) -> void:
+	_ask(ScEvents.Ask.SPECTATE, ScEvents.write_ask_spectate(direction))
+
+
 ## Sends one encoded voice packet to the server. Client side.
 func send_voice(payload: PackedByteArray) -> void:
 	if link != null and net != null and not net.is_server:
@@ -1317,6 +1408,27 @@ func _on_event(message: DotNetMessage) -> void:
 
 			if bool(text["ok"]):
 				notice_received.emit(str(text["text"]))
+		ScEvents.Kind.SPECTATE:
+			var view := ScEvents.read_spectate(reader)
+
+			if bool(view["ok"]) and game.spectate != null:
+				game.spectate.apply_view(
+					player_key(int(view["viewer"])),
+					int(view["mode"]),
+					player_key(int(view["target"])) if int(view["target"]) != 0 else &"",
+					player_key(int(view["killer"])) if int(view["killer"]) != 0 else &"",
+					view["death_at"]
+				)
+				spectate_received.emit(
+					int(view["viewer"]), int(view["mode"]), int(view["target"])
+				)
+		ScEvents.Kind.IMPACT:
+			var landed := ScEvents.read_impact(reader)
+
+			if bool(landed["ok"]):
+				impact_received.emit(
+					landed["position"], int(landed["outcome"]), float(landed["impulse"])
+				)
 
 
 func _apply_hello(reader: DotNetReader) -> void:
@@ -1345,6 +1457,8 @@ func _apply_hello(reader: DotNetReader) -> void:
 	game.config.survival_seconds = float(hello["survival_seconds"])
 	game.config.showdown_seconds = float(hello["showdown_seconds"])
 	game.config.showdown_warmup_seconds = float(hello["handover_seconds"])
+
+	_claim_local_player()
 
 	hello_received.emit(local_player_id)
 
@@ -1500,7 +1614,23 @@ func _apply_join(reader: DotNetReader) -> void:
 		player.sampler = null
 		player.samples_input = false
 
-		var identity := _build_entity(player, 0)
+		# [b]This client's own player is owned by this client, and nobody else's is.[/b]
+		# Until 2026-09-25 every mirror was built with owner 0, this client's own included,
+		# so `is_owner` was false for the local player, `registry.predicted()` was empty and
+		# `client_tick` simulated nobody: the player moved only when a snapshot came back, a
+		# round trip behind the keys, and the camera — drawn from `render_state`, a blend
+		# against a previous tick the controller never recorded — lurched between where the
+		# player was last teleported and where the server had them. Every check passed
+		# anyway, because a client adopting the server's answer also agrees with the server.
+		#
+		# By session and not by a peer id on the wire: JOIN does not carry one, and what
+		# `is_owner` compares is the owner against THIS registry's local peer — so the local
+		# peer id is the only right value whatever the server calls the connection, and the
+		# wire (and therefore a published pack's server half) is unchanged. HELLO, which sets
+		# `local_player_id`, is sent before every JOIN in `_admit` on the same reliable
+		# channel; [method _apply_hello] still claims a player that got here first, because
+		# an order is a property of the server, not of this file.
+		var identity := _build_entity(player, _mirror_owner(session_id))
 		var registered := net.registry.register(
 			identity, int(join["net_id"]), net.clock.tick, net.config
 		)
@@ -1514,6 +1644,47 @@ func _apply_join(reader: DotNetReader) -> void:
 	game.sides[id] = int(join["team"])
 	player.team = int(join["team"])
 	roster_changed.emit(session_id)
+
+
+## Who owns a mirrored player on this client: this client, if it is this client's own
+## player, and the server's 0 otherwise.
+##
+## [b]Never the local peer for anybody else[/b], or this client would predict a person whose
+## keys it never had. And a client whose local peer is 0 claims nothing: 0 is the server's
+## owner id, and on such a registry dot-net's `is_owner` (owner == local peer) is already true
+## of every owner-0 mirror — which this function cannot undo, and which no client here runs
+## into, because `ScClient` takes its id from the multiplayer API and that never answers 0.
+func _mirror_owner(session_id: int) -> int:
+	if net == null or net.local_peer_id <= 0:
+		return 0
+
+	if local_player_id != 0 and session_id == local_player_id:
+		return net.local_peer_id
+
+	return 0
+
+
+## The local player's mirror, claimed if it arrived before HELLO said whose it was.
+##
+## Not the order `_admit` sends in, and that is why it is belt and braces rather than a path
+## this game takes: a JOIN that reached this peer before its HELLO would otherwise leave the
+## local player unpredicted for the rest of the session, with every check still passing —
+## which is the bug [method _apply_join] documents.
+func _claim_local_player() -> void:
+	var mine: ScPlayerNet = _behaviours.get(local_player_id)
+
+	if mine == null or mine.identity == null or not mine.identity.is_registered():
+		return
+
+	var claimed := _mirror_owner(local_player_id)
+
+	if claimed == 0 or mine.identity.owner_peer_id == claimed:
+		return
+
+	DotLog.debug(CHANNEL, "claimed the local player after HELLO", {
+		"session": local_player_id, "net_id": mine.identity.net_id,
+	})
+	var _changed := net.registry.change_owner(mine.identity.net_id, claimed)
 
 
 ## A prop or a chopper the server has put out.
@@ -1579,6 +1750,7 @@ func _apply_prop(reader: DotNetReader) -> void:
 		return
 
 	_bodies[net_id] = behaviour
+	prop_arrived.emit(body.global_position, bool(info["vehicle"]))
 
 
 ## Where a client finds the scene for something the server named.

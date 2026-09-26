@@ -54,6 +54,11 @@ enum Kind {
 	NOTICE,
 	## One chat line, already routed, sanitised and addressed by [DotChatRouter].
 	CHAT,
+	## What this one player's camera is on now that they are out. To its owner only.
+	SPECTATE,
+	## Something landed on a platform hard enough to matter. What a client makes a noise
+	## about; the lean it caused arrives in the snapshot like any other.
+	IMPACT,
 }
 
 enum Ask {
@@ -65,6 +70,8 @@ enum Ask {
 	BOARD,
 	## Put me on that side.
 	TEAM,
+	## I am out: show me the next person, the previous one, or the other camera.
+	SPECTATE,
 }
 
 ## Every decoder returns an `ok` beside its fields, and every caller checks it.
@@ -534,6 +541,74 @@ static func read_blast(r: DotNetReader) -> Dictionary:
 	var at := r.read_vector3_range(-WORLD_EXTENT, WORLD_EXTENT, POS_BITS)
 	var radius := r.read_float_range(0.0, 64.0, 12)
 	return {"position": at, "radius": radius, "ok": r.ok()}
+
+
+# --- Watching --------------------------------------------------------------
+
+## A view dot-spectate decided, for the one player it belongs to.
+##
+## [b]The death position travels.[/b] `DotSpectatorView.to_wire` did not carry it until
+## 2026-09-25, and a mirror without it puts every death camera at the world origin, which
+## in this map is inside the cannon. This event stays the game's own: bit-packed and keyed
+## by session, where dot-spectate's is a dictionary keyed by string. Everything else a mirror needs to
+## draw the camera it already has: the players are in its world.
+##
+## Sessions rather than keys, as everywhere on this wire; zero is nobody.
+static func write_spectate(
+	viewer: int, mode: int, target: int, killer: int, death_at: Vector3
+) -> PackedByteArray:
+	var w := _w()
+	w.write_varint(viewer)
+	w.write_uint(clampi(mode, 0, 7), 3)
+	w.write_varint(maxi(target, 0))
+	w.write_varint(maxi(killer, 0))
+	w.write_vector3_range(death_at, -WORLD_EXTENT, WORLD_EXTENT, POS_BITS)
+	return w.to_bytes()
+
+
+static func read_spectate(r: DotNetReader) -> Dictionary:
+	var viewer := r.read_varint()
+	var mode := r.read_uint(3)
+	var target := r.read_varint()
+	var killer := r.read_varint()
+	var death_at := r.read_vector3_range(-WORLD_EXTENT, WORLD_EXTENT, POS_BITS)
+	return {
+		"viewer": viewer, "mode": mode, "target": target, "killer": killer,
+		"death_at": death_at, "ok": r.ok(),
+	}
+
+
+## Next (+1), previous (-1), or the other camera (0).
+static func write_ask_spectate(direction: int) -> PackedByteArray:
+	var w := _w()
+	w.write_uint(clampi(direction, -1, 1) + 1, 2)
+	return w.to_bytes()
+
+
+static func read_ask_spectate(r: DotNetReader) -> Dictionary:
+	var raw := r.read_uint(2)
+	return {"direction": clampi(raw, 0, 2) - 1, "ok": r.ok()}
+
+
+# --- Impacts ---------------------------------------------------------------
+
+## Where something landed, and what it did to the platform. [param outcome] is
+## [enum ScPlatforms.Impact].
+static func write_impact(at: Vector3, outcome: int, impulse: float) -> PackedByteArray:
+	var w := _w()
+	w.write_vector3_range(at, -WORLD_EXTENT, WORLD_EXTENT, POS_BITS)
+	w.write_uint(clampi(outcome, 0, 3), 2)
+	# Kilogram metres per second, to the nearest ten. What a client scales the noise by, and
+	# nothing a client decides anything from.
+	w.write_float_range(clampf(impulse, 0.0, 40000.0), 0.0, 40000.0, 12)
+	return w.to_bytes()
+
+
+static func read_impact(r: DotNetReader) -> Dictionary:
+	var at := r.read_vector3_range(-WORLD_EXTENT, WORLD_EXTENT, POS_BITS)
+	var outcome := r.read_uint(2)
+	var impulse := r.read_float_range(0.0, 40000.0, 12)
+	return {"position": at, "outcome": outcome, "impulse": impulse, "ok": r.ok()}
 
 
 # --- Asking ----------------------------------------------------------------

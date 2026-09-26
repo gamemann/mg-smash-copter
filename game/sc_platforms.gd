@@ -532,7 +532,8 @@ func _build_pillar(at: Vector3) -> StaticBody3D:
 	mesh.material_override = ScTextures.surface(ScTextures.Role.PILLAR)
 	body.add_child(mesh)
 
-	_classify(body, &"world")
+	# Its own layer, which a person does not collide with: see `ScGame._build_physics`.
+	_classify(body, &"pillar")
 	add_child(body)
 	return body
 

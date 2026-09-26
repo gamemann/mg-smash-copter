@@ -455,6 +455,42 @@ extends DotConfig
 ## standing body and one that is a little high goes over every time.
 @export_range(0.0, 45.0, 0.5) var bot_aim_spread_degrees: float = 7.0
 
+# --- Watching --------------------------------------------------------------
+
+@export_group("Watching")
+
+## Who somebody who is out may watch: 0 anybody, 1 their own side, 2 nobody.
+##
+## [b]Their own side by default, and the second half is why.[/b] Nobody can hurt anybody
+## for the first two minutes, so a dead player watching another side on the platforms is
+## harmless — but the showdown is a team fight in the open, and a dead player with a camera
+## on the other side's corner is a free scout for their team-mates on voice. dot-spectate's
+## own rule then forces first person, because a chase camera behind a team-mate sees round
+## corners they cannot. `sc_spectate_camera` is the cvar.
+@export_enum("anybody", "own side", "nobody") var spectate_camera: int = 1
+
+# --- Progress --------------------------------------------------------------
+
+@export_group("Progress")
+
+## Whether the server counts per-player numbers and awards achievements at all.
+@export var keep_progress: bool = true
+
+## Where lifetime achievement progress is written. Empty keeps it in memory.
+##
+## [b]Memory by default, which is dot-achievements' own default and for its reason:[/b] a
+## server that silently started writing a file per player under `user://` is one nobody
+## notices until the disk is full. An operator who wants progress to outlive a restart
+## names a directory.
+@export var progress_directory: String = ""
+
+## Whether the numbers and the unlocks are reported to the backbone.
+##
+## [b]Off, and it needs a credential this game does not configure.[/b] A reporter with no
+## integration token queues rows nobody will send; the day an operator gives this server
+## one, this is the switch.
+@export var report_progress: bool = false
+
 
 func env_prefix() -> String:
 	return "SC_"
@@ -538,6 +574,13 @@ func validate() -> DotResult:
 		return DotResult.fail(
 			DotError.CODE_INVALID,
 			"Every cannon tier weight is zero, so the cannon could never choose anything.",
+		)
+
+	if spectate_camera < 0 or spectate_camera > 2:
+		return DotResult.fail(
+			DotError.CODE_INVALID,
+			"spectate_camera is %d; it is 0 (anybody), 1 (own side) or 2 (nobody)."
+				% spectate_camera,
 		)
 
 	if chopper_lift <= 1.0:

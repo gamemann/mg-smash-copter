@@ -34,6 +34,9 @@ var _health: Label = null
 var _field: Label = null
 var _special: Label = null
 var _shout: Label = null
+
+## What a player who is out is looking at, and the keys that change it. Empty while playing.
+var watching_label: Label = null
 var _tilt_back: ColorRect = null
 var _tilt_fill: ColorRect = null
 var _root: Control = null
@@ -147,6 +150,19 @@ func _build() -> void:
 	_field.offset_bottom = -26.0
 	_field.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 
+	# Bottom middle, above where the chat box's input line opens, and under nothing else:
+	# the health number is bottom-left and the field bottom-right, and a player who is out
+	# has no use for either.
+	watching_label = _label(size)
+	watching_label.name = "Watching"
+	watching_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
+	watching_label.offset_left = -520.0
+	watching_label.offset_right = 520.0
+	watching_label.offset_top = -140.0
+	watching_label.offset_bottom = -104.0
+	watching_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	watching_label.add_theme_color_override("font_color", Color(0.80, 0.90, 1.0))
+
 	_build_tilt()
 
 	# A dot rather than a cross. For the whole first half there is nothing to aim at, and in
@@ -201,6 +217,12 @@ func _label(size: int) -> Label:
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_root.add_child(label)
 	return label
+
+
+## The spectator line, or an empty string to take it away. See [ScSpectate.line_for].
+func set_watching(text: String) -> void:
+	if watching_label != null:
+		watching_label.text = text
 
 
 ## One line in the middle of the screen, for a few seconds. What a special announces itself

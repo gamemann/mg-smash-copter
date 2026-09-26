@@ -8,7 +8,9 @@ const ScCopter := preload("sc_copter.gd")
 const ScLayouts := preload("sc_layouts.gd")
 const ScPlatforms := preload("sc_platforms.gd")
 const ScPlayer := preload("sc_player.gd")
+const ScProgress := preload("sc_progress.gd")
 const ScSpecials := preload("sc_specials.gd")
+const ScSpectate := preload("sc_spectate.gd")
 
 ## The simulation. Headless, authoritative, and the only thing that decides anything.
 ##
@@ -102,6 +104,18 @@ const IMPACT_HURT_PER_IMPULSE := 0.055
 ## a margin for a machine still bouncing, and is thirty-eight metres below any deck.
 const COPTER_FLOOR_CLEARANCE := 2.0
 
+## Metres above the kill height at which a person on foot has reached the floor.
+##
+## [b]The floor's top IS the kill height, so nobody standing on it is below it.[/b] Until
+## 2026-09-25 the fall check was `y <= kill_height`, and a person who fell forty metres landed
+## on the floor with their feet a centimetre above it — the motor rests a capsule a skin width
+## off whatever it stands on — and stood there, alive, for the rest of the round. Every fall
+## check in the suites put a player five metres UNDER the floor with `place_at` and stepped
+## once, which a real fall never does; the first check that let somebody actually fall off a
+## collapsed platform found nobody had ever died of it. Half a metre is a step height with a
+## margin, and nothing in the world a person can stand on is within thirty-eight metres of it.
+const FLOOR_REACH := 0.5
+
 signal player_added(player_id: StringName)
 signal player_removed(player_id: StringName)
 
@@ -147,6 +161,9 @@ signal platform_struck(index: int, at: Vector3, impulse: float, outcome: int)
 ## A barrel went off.
 signal blast(at: Vector3, radius: float)
 
+## Somebody earned an achievement. What a module turns into a notice to that one player.
+signal achievement_earned(player_id: StringName, title: String, points: int)
+
 ## A survivor was handed a weapon at the handover.
 ##
 ## [b]A signal rather than something the bridge could watch for itself.[/b] A weapon is not a
@@ -190,6 +207,13 @@ var match_node: DotMatch = null
 var random: DotRandomManager = null
 var physics: DotPhysicsLayout = null
 var effects: DotFxManager = null
+
+## Where somebody who is out looks. See [ScSpectate].
+var spectate: ScSpectate = null
+
+## The numbers a player keeps and what they earn. Null on a client and when
+## [member ScConfig.keep_progress] is off. See [ScProgress].
+var progress: ScProgress = null
 
 ## player id -> ScPlayer.
 var players: Dictionary = {}
@@ -283,6 +307,8 @@ func _ready() -> void:
 	_build_combat()
 	_build_effects()
 	_build_match()
+	_build_spectate()
+	_build_progress()
 
 	# [b]Laid out now, not when a round begins.[/b] dot-match runs a warmup before the first
 	# round, so a world that only furnished itself on `round_started` would sit through the
@@ -317,7 +343,7 @@ func _exit_tree() -> void:
 ## every `add_child` in this file goes through an `apply_to` whose result is checked.
 func _build_physics() -> void:
 	physics = DotPhysicsLayout.custom(&"smash_copter", [
-		&"world", &"player", &"prop", &"vehicle",
+		&"world", &"player", &"prop", &"vehicle", &"pillar",
 	])
 
 	for layer in physics.layers:
@@ -326,13 +352,28 @@ func _build_physics() -> void:
 				# Not other players. Two capsules that push each other on a platform that
 				# leans toward the heavier side is a game decided by who walked into whom,
 				# and the shove would be a load the model never saw.
+				#
+				# [b]And not a pillar.[/b] See `pillar` below.
 				layer.collides_with = [&"world", &"prop", &"vehicle"]
 			&"prop":
-				layer.collides_with = [&"world", &"player", &"prop", &"vehicle"]
+				layer.collides_with = [&"world", &"player", &"prop", &"vehicle", &"pillar"]
 			&"vehicle":
-				layer.collides_with = [&"world", &"player", &"prop"]
+				layer.collides_with = [&"world", &"player", &"prop", &"pillar"]
+			&"pillar":
+				# [b]Solid to what is thrown and flown, and never to a person.[/b] A pillar's
+				# top is 2.7 m across and 0.57 m under its deck, and the only way a person
+				# ever reaches it is the deck going: until 2026-09-25 everybody standing
+				# within about a metre and a half of a platform's middle when it came off its
+				# pillar dropped half a metre onto the top and stood there for the rest of the
+				# round, alive, out of the cannon's reach (it aims at STANDING platforms) —
+				# and was handed a weapon at the showdown. So the middle of every platform was
+				# collapse-proof, and "stand in the middle" beat the whole first half of the
+				# game. A collapse takes the floor away with whoever is on it; the bare pillar
+				# stays, as the marker ScConfig.pillar_falls_with_platform keeps it for, and a
+				# prop or a chopper still strikes it.
+				layer.collides_with = [&"prop", &"vehicle"]
 			_:
-				layer.collides_with = [&"player", &"prop", &"vehicle"]
+				layer.collides_with = [&"player", &"prop", &"vehicle", &"pillar"]
 
 	var built := physics.build()
 
@@ -647,6 +688,108 @@ func _build_match() -> void:
 	match_node.teams.reindex()
 
 
+## Somewhere for a player who is out to look, and the server's rules about where.
+##
+## [b]Built on both ends and authoritative on one.[/b] A connected client's world runs a
+## mirror that is told each decision in a `SPECTATE` event; see [ScSpectate]. A world whose
+## spectating would not set up still plays — being out simply leaves the camera where the
+## body is, which is how this game shipped — so a refusal is a WARN rather than the world
+## failing to open.
+func _build_spectate() -> void:
+	spectate = ScSpectate.new()
+	spectate.name = "Spectate"
+	spectate.players = players
+	spectate.sides = sides
+	spectate.phase_fn = func() -> int: return phase
+	spectate.in_showdown_fn = func(p: int) -> bool:
+		return p == Phase.HANDOVER or p == Phase.SHOWDOWN
+	add_child(spectate)
+
+	var ready_now := spectate.setup(authoritative, tick_rate, config.spectate_camera)
+
+	if not ready_now.ok:
+		DotLog.warn(CHANNEL, "spectating is off", {"why": ready_now.error.message})
+		remove_child(spectate)
+		spectate.queue_free()
+		spectate = null
+
+
+## Statistics and achievements, where the world decides things.
+##
+## [b]Off on a client, because a client decides nothing[/b] — a connected client's world
+## would count what its mirrors happen to say. A tracker that will not start is a WARN and
+## a world that plays on without it, the same bargain as spectating.
+func _build_progress() -> void:
+	if not authoritative or not config.keep_progress:
+		return
+
+	progress = ScProgress.new()
+	progress.name = "Progress"
+	progress.players = players
+	progress.sides = sides
+	progress.hurt_radius = IMPACT_HURT_RADIUS
+	add_child(progress)
+
+	var ready_now := progress.setup(config.progress_directory, config.report_progress)
+
+	if not ready_now.ok:
+		DotLog.warn(CHANNEL, "progress is off", {"why": ready_now.error.message})
+		remove_child(progress)
+		progress.queue_free()
+		progress = null
+		return
+
+	progress.earned.connect(func(id: StringName, title: String, points: int) -> void:
+		achievement_earned.emit(id, title, points)
+	)
+
+
+## The two overview cameras, from the field this round was actually laid out as.
+##
+## [b]From the decks, not from the configuration.[/b] The chequerboard pulls its rows in and
+## moves the whole field half a row over, so a camera aimed at where the configuration says
+## the middle is looks at the hole the tube stands in with half the field out of frame.
+func _refresh_overviews() -> void:
+	if spectate == null or platforms == null or arena == null:
+		return
+
+	var centre := Vector3.ZERO
+	var counted := 0
+
+	for i in range(platforms.count()):
+		var deck := platforms.deck_at(i)
+
+		if deck != null:
+			centre += deck.centre
+			counted += 1
+
+	if counted > 0:
+		centre /= float(counted)
+	else:
+		centre = Vector3(0.0, config.deck_height, 0.0)
+
+	var reach := 0.0
+
+	for i in range(platforms.count()):
+		var deck := platforms.deck_at(i)
+
+		if deck != null:
+			reach = maxf(reach, Vector2(
+				deck.centre.x - centre.x, deck.centre.z - centre.z
+			).length() + deck.half)
+
+	# From the side away from the showdown, which is along -Z, so the corners are in the
+	# back of the same shot.
+	var eye := centre + Vector3(0.0, reach * 0.8 + 12.0, reach * 1.25 + 10.0)
+	var field := Transform3D(Basis.IDENTITY, eye).looking_at(centre, Vector3.UP)
+
+	var middle := arena.showdown_centre()
+	var over := middle + Vector3(0.0, 26.0, config.corner_distance * 0.9 + 18.0)
+	var showdown := Transform3D(Basis.IDENTITY, over).looking_at(middle, Vector3.UP)
+
+	spectate.set_overviews(field, showdown)
+
+
 # --- Players ----------------------------------------------------------------
 
 ## Puts somebody in the world. [param wanted_team] is a team id, or 0 to be placed.
@@ -837,6 +980,9 @@ func place_one(player: ScPlayer) -> void:
 
 	player.place_at(at, rad_to_deg(atan2(-inward.x, -inward.z)))
 
+	if spectate != null:
+		spectate.on_spawned(player.player_id)
+
 
 ## Which side somebody new goes on: the smallest one, ties to the lower id.
 ##
@@ -890,6 +1036,14 @@ func remove_player(player_id: StringName) -> void:
 	players.erase(player_id)
 	sides.erase(player_id)
 	player.queue_free()
+
+	# After the roster has dropped them: dot-spectate picks a watcher's replacement target
+	# from the roster, and one still holding the leaver picks the leaver.
+	if spectate != null:
+		spectate.on_left(player_id)
+
+	if progress != null:
+		progress.leave(player_id)
 
 	player_removed.emit(player_id)
 
@@ -1003,6 +1157,9 @@ func _on_round_started(number: int) -> void:
 	_lay_out_round()
 	_roll_round_special()
 
+	if progress != null:
+		progress.on_round_began()
+
 	_set_phase(Phase.SURVIVAL)
 
 	round_began.emit(number, layout.id if layout != null else &"")
@@ -1017,6 +1174,9 @@ func _on_round_started(number: int) -> void:
 func _on_round_ended(number: int, winner: int, _outcome: int) -> void:
 	_set_phase(Phase.IDLE)
 	_clear_specials()
+
+	if progress != null:
+		progress.on_round_over(winner)
 
 	round_over.emit(number, winner)
 	DotLog.info(CHANNEL, "round over", {"number": number, "winner": winner})
@@ -1037,6 +1197,7 @@ func _lay_out_round() -> void:
 
 	platforms.gravity = config.gravity * maxf(active.gravity_scale, 0.05)
 	platforms.build(layout, physics)
+	_refresh_overviews()
 
 	cannon.stream = random.stream(&"cannon")
 	cannon.begin_round()
@@ -1136,6 +1297,10 @@ func _place_players() -> void:
 			player.place_at(at, rad_to_deg(atan2(-inward.x, -inward.z)))
 			player.carried_metres = 0.0
 			player.retune(active)
+
+			# Everybody is back in the world, so nobody is watching any more.
+			if spectate != null:
+				spectate.on_spawned(player.player_id)
 
 	# Anybody on no side at all — a spectator, a test's stand-in — goes somewhere valid
 	# rather than at the origin, which in this map is inside the cannon.
@@ -1252,6 +1417,9 @@ func _begin_handover() -> void:
 				player.health.invulnerable = true
 
 			_arm(player, team, seat)
+
+	if progress != null:
+		progress.on_handover()
 
 	DotLog.info(CHANNEL, "the survivors are in the corners", {
 		"alive": alive_count(), "teams": teams_alive(),
@@ -1445,6 +1613,11 @@ func _step(delta: float) -> void:
 
 	if combat != null:
 		combat.tick(_tick, delta)
+
+	# After every death this tick has produced, so a death camera that runs out on this tick
+	# hands over to somebody who is actually still up.
+	if spectate != null:
+		spectate.advance(_tick)
 
 	if not sides_are_playable():
 		return
@@ -1832,7 +2005,8 @@ func _watch_falls() -> void:
 			_watch_rider_fall(player)
 			continue
 
-		if player.controller.state.position.y > config.kill_height:
+		# Reaching the floor, not passing through it: see FLOOR_REACH.
+		if player.controller.state.position.y > config.kill_height + FLOOR_REACH:
 			continue
 
 		_kill_by_fall(player, player.controller.state.position)
@@ -2200,10 +2374,16 @@ func _bot_jitter(player: ScPlayer) -> Vector2:
 # --- Reacting ---------------------------------------------------------------
 
 func _on_platform_collapsed(index: int, why: StringName) -> void:
+	if progress != null:
+		progress.on_platform_collapsed(index, why)
+
 	platform_collapsed.emit(index, why)
 
 
 func _on_platform_struck(index: int, at: Vector3, impulse: float, outcome: int) -> void:
+	if progress != null:
+		progress.on_platform_struck(index, at, outcome)
+
 	platform_struck.emit(index, at, impulse, outcome)
 
 
@@ -2284,6 +2464,24 @@ func _on_player_died(player: ScPlayer, damage: DotDamage) -> void:
 	# off. The table returns an empty key for it, which means the same thing.
 	var by := entities.key_for_id(damage.attacker)
 	var why: StringName = damage.context.get("why", DIED_SHOT)
+
+	# [b]Before dot-match hears of it, and the order is the whole reason for this comment.[/b]
+	# `report_kill` can END the round synchronously — the last person on a side going is an
+	# elimination — and ending it drops the phase to IDLE and files the round's numbers. A
+	# kill counted after that is counted in no phase and filed in no round: the winning shot
+	# of every showdown was missing from its shooter's figures until the suite said so.
+	if spectate != null and authoritative:
+		spectate.on_died(
+			player.player_id, by, why == DIED_FELL,
+			damage.point if damage.point != Vector3.ZERO else player.global_position,
+			config.deck_height, _tick
+		)
+
+	if progress != null:
+		progress.on_died(
+			player.player_id, by, why == DIED_FELL,
+			phase == Phase.HANDOVER or phase == Phase.SHOWDOWN
+		)
 
 	# [b]Only a player is reported to dot-match.[/b] Anything registered with dot-combat
 	# arrives at this handler looking the same, and a scoreboard row filed against a falling

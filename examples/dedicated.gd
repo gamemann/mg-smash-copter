@@ -21,7 +21,7 @@ const ScPlayer := preload("../game/sc_player.gd")
 ## and those are what this is about.
 
 const SECTIONS := 10
-const CHECKS := 66
+const CHECKS := 69
 
 ## Everything this run writes, and it is deleted on the way in and on the way out.
 ##
@@ -400,6 +400,19 @@ func _test_the_tunables() -> void:
 	_run_command("sc_cannon_max_tier 2")
 	_check(config.cannon_max_tier == 2, "the biggest prop the cannon may throw is a cvar")
 
+	# Who somebody out may watch, which reaches the spectator manager's rules as well as the
+	# configuration: a cvar that wrote only the configuration would change the NEXT world's
+	# policy and leave this one's alone.
+	_run_command("sc_spectate_camera 0")
+	_check(
+		config.spectate_camera == 0 and game.spectate != null
+			and game.spectate.manager.rules.force_camera == 0,
+		"who somebody out may watch is a cvar, and it reaches the running policy"
+	)
+	_run_command("sc_spectate_camera 9")
+	_check(game.spectate.manager.rules.force_camera == 2, "and is clamped to the three it has")
+	_run_command("sc_spectate_camera 1")
+
 	_finished()
 
 
@@ -440,6 +453,7 @@ func _test_a_round_runs() -> void:
 			"the round starts", "it reaches the corners", "and the showdown",
 			"the cannon threw something", "and the field took damage",
 			"and lag compensation keeps nothing for what the server let go",
+			"and a round of stand-ins counted nothing for anybody",
 			"and the engine reported no error",
 		]:
 			_check(false, what)
@@ -507,6 +521,14 @@ func _test_a_round_runs() -> void:
 	for net_id: int in net.history._tracks.keys():
 		if not net.registry.has(net_id):
 			orphans.append(net_id)
+
+	# Everybody in this round is a stand-in, and stand-ins are nobody's numbers: a server
+	# left to itself all night must not be filing figures against bots.
+	_check(
+		game.progress != null and game.progress.stats.players().is_empty(),
+		"and a round of stand-ins counted nothing for anybody",
+		"%d tracked" % (game.progress.stats.players().size() if game.progress != null else -1)
+	)
 
 	_check(orphans.is_empty(), "and lag compensation keeps nothing for what the server let go",
 		"%d tracks, %d orphaned %s" % [net.history._tracks.size(), orphans.size(), str(orphans)])

@@ -10,6 +10,9 @@
 #   tools/shot.sh --view=bridge       # a bridge leant on at one end, from beside it
 #   tools/shot.sh --view=beacon       # an admin's beacon on a stand-in, from across the field
 #   tools/shot.sh --view=blind        # the local player's own eyes, blinded, through the HUD
+#   tools/shot.sh --view=spectate     # the local player, out, watching what the server allows
+#   tools/shot.sh --view=spectate --sc-spectate-camera=0   # ...when it allows anybody
+#   tools/shot.sh --view=walk         # a CONNECTED client running its own player, measured
 #   tools/shot.sh --view=field --seconds=20 --out=res://screenshots/late.png
 #   tools/shot.sh --view=field --sc-layout-ids=checker   # any --sc-* is the game's own config
 #
@@ -37,5 +40,10 @@ done
 
 [ -n "$out" ] || out="res://screenshots/${view}.png"
 
+# `walk` is a different program: a server and a connected client in one process
+# (tools/net_shot.gd), because prediction only exists where there is a wire.
+scene="res://tools/shot.tscn"
+[ "$view" = "walk" ] && scene="res://tools/net_shot.tscn"
+
 exec xvfb-run -a "${GODOT:-godot}" --path . --resolution 1280x720 \
-    res://tools/shot.tscn -- "--seconds=$seconds" "--view=$view" "--out=$out" "${config[@]}"
+    "$scene" -- "--seconds=$seconds" "--view=$view" "--out=$out" "${config[@]}"
