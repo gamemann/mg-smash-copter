@@ -15,18 +15,21 @@ const ScPaths := preload("sc_paths.gd")
 
 ## Where the bodies live, as this game was authored.
 ##
-## [b]Read through [method ScPaths.rebase] and never used raw.[/b] A delivered pack mounts
-## at `res://dot_cloud/<id>/<version>/`, so an absolute path to this game's OWN files
+## [b]Rebased where they are defined, so no use of them can forget to.[/b] A delivered pack
+## mounts at `res://dot_cloud/<id>/<version>/`, so an absolute path to this game's OWN files
 ## resolves against the host project root — which holds another game's props, or nothing.
-const CRATE_SCENE := "res://props/sc_crate.tscn"
-const TYRE_SCENE := "res://props/sc_tyre.tscn"
-const CONE_SCENE := "res://props/sc_cone.tscn"
-const BARREL_SCENE := "res://props/sc_barrel.tscn"
-const BOULDER_SCENE := "res://props/sc_boulder.tscn"
-const CONTAINER_SCENE := "res://props/sc_container.tscn"
-const SLAB_SCENE := "res://props/sc_slab.tscn"
-const MONOLITH_SCENE := "res://props/sc_monolith.tscn"
-const COPTER_SCENE := "res://props/sc_copter.tscn"
+## They were `const`s rebased at every call site, which was correct and was also one new
+## call site away from not being: `static var` is the only spelling that can hold the
+## rebased value, because a `const` cannot call.
+static var CRATE_SCENE := ScPaths.rebase("res://props/sc_crate.tscn")
+static var TYRE_SCENE := ScPaths.rebase("res://props/sc_tyre.tscn")
+static var CONE_SCENE := ScPaths.rebase("res://props/sc_cone.tscn")
+static var BARREL_SCENE := ScPaths.rebase("res://props/sc_barrel.tscn")
+static var BOULDER_SCENE := ScPaths.rebase("res://props/sc_boulder.tscn")
+static var CONTAINER_SCENE := ScPaths.rebase("res://props/sc_container.tscn")
+static var SLAB_SCENE := ScPaths.rebase("res://props/sc_slab.tscn")
+static var MONOLITH_SCENE := ScPaths.rebase("res://props/sc_monolith.tscn")
+static var COPTER_SCENE := ScPaths.rebase("res://props/sc_copter.tscn")
 
 const CRATE := &"crate"
 const TYRE := &"tyre"
@@ -63,7 +66,7 @@ static func props(_config: ScConfig) -> DotPropCatalogue:
 	# seconds of a round are only crates, so a player learns the one rule — a platform
 	# leans toward the load on it — while the cost of learning it is a stumble.
 
-	var crate := DotPropDef.make(CRATE, ScPaths.rebase(CRATE_SCENE))
+	var crate := DotPropDef.make(CRATE, CRATE_SCENE)
 	crate.display_name = "Crate"
 	crate.category = &"debris"
 	crate.size = DotPropDef.Size.SMALL
@@ -77,7 +80,7 @@ static func props(_config: ScConfig) -> DotPropCatalogue:
 	crate.meta = {META_TIER: 1}
 	catalogue.add(crate)
 
-	var tyre := DotPropDef.make(TYRE, ScPaths.rebase(TYRE_SCENE))
+	var tyre := DotPropDef.make(TYRE, TYRE_SCENE)
 	tyre.display_name = "Tyre"
 	tyre.category = &"debris"
 	tyre.size = DotPropDef.Size.SMALL
@@ -91,7 +94,7 @@ static func props(_config: ScConfig) -> DotPropCatalogue:
 	tyre.meta = {META_TIER: 1}
 	catalogue.add(tyre)
 
-	var cone := DotPropDef.make(CONE, ScPaths.rebase(CONE_SCENE))
+	var cone := DotPropDef.make(CONE, CONE_SCENE)
 	cone.display_name = "Cone"
 	cone.category = &"debris"
 	cone.size = DotPropDef.Size.SMALL
@@ -104,7 +107,7 @@ static func props(_config: ScConfig) -> DotPropCatalogue:
 
 	# --- Tier two: it tips ---------------------------------------------------
 
-	var barrel := DotPropDef.make(BARREL, ScPaths.rebase(BARREL_SCENE))
+	var barrel := DotPropDef.make(BARREL, BARREL_SCENE)
 	barrel.display_name = "Barrel"
 	barrel.category = &"hazard"
 	barrel.size = DotPropDef.Size.SMALL
@@ -120,7 +123,7 @@ static func props(_config: ScConfig) -> DotPropCatalogue:
 	barrel.meta = {META_TIER: 2}
 	catalogue.add(barrel)
 
-	var boulder := DotPropDef.make(BOULDER, ScPaths.rebase(BOULDER_SCENE))
+	var boulder := DotPropDef.make(BOULDER, BOULDER_SCENE)
 	boulder.display_name = "Boulder"
 	boulder.category = &"debris"
 	boulder.size = DotPropDef.Size.MEDIUM
@@ -132,7 +135,7 @@ static func props(_config: ScConfig) -> DotPropCatalogue:
 
 	# --- Tier three: it takes a corner off -----------------------------------
 
-	var container := DotPropDef.make(CONTAINER, ScPaths.rebase(CONTAINER_SCENE))
+	var container := DotPropDef.make(CONTAINER, CONTAINER_SCENE)
 	container.display_name = "Container"
 	container.category = &"debris"
 	container.size = DotPropDef.Size.LARGE
@@ -142,7 +145,7 @@ static func props(_config: ScConfig) -> DotPropCatalogue:
 	container.meta = {META_TIER: 3}
 	catalogue.add(container)
 
-	var slab := DotPropDef.make(SLAB, ScPaths.rebase(SLAB_SCENE))
+	var slab := DotPropDef.make(SLAB, SLAB_SCENE)
 	slab.display_name = "Slab"
 	slab.category = &"debris"
 	slab.size = DotPropDef.Size.LARGE
@@ -158,7 +161,7 @@ static func props(_config: ScConfig) -> DotPropCatalogue:
 	# platform outright is a map nobody survives a minute of; at one shot in twenty it is
 	# the thing a round is remembered for. See [member ScConfig.cannon_tier_weights].
 
-	var monolith := DotPropDef.make(MONOLITH, ScPaths.rebase(MONOLITH_SCENE))
+	var monolith := DotPropDef.make(MONOLITH, MONOLITH_SCENE)
 	monolith.display_name = "Monolith"
 	monolith.category = &"debris"
 	monolith.size = DotPropDef.Size.HUGE
@@ -213,7 +216,7 @@ static func vehicles(config: ScConfig) -> DotVehicleCatalogue:
 	copter.id = COPTER
 	copter.display_name = "Chopper"
 	copter.category = &"aircraft"
-	copter.scene_path = ScPaths.rebase(COPTER_SCENE)
+	copter.scene_path = COPTER_SCENE
 	copter.chassis_script_path = ScPaths.rebase("res://game/sc_copter.gd")
 	copter.kind = DotVehicleDef.Kind.CUSTOM
 	# Indestructible. There is no weapon in the survival phase and the showdown happens

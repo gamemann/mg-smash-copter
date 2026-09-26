@@ -22,13 +22,15 @@ const ScPaths := preload("../game/sc_paths.gd")
 
 const CHANNEL := "sc.prop"
 
-## The two atlases, as this game was authored. Rebased before they are loaded.
+## The two atlases, rebased where they are defined. They are rebased again at load, which
+## is a no-op on these and is what makes an [code]atlas_path[/code] set in a scene safe
+## too — the publisher has already rewritten that one onto the mount.
 ##
 ## [b]Two files with the same name, and they are different files.[/b] Flattening the kits
 ## into one folder paints the survival props in the car kit's palette, which is a
 ## plausible-looking wrong answer that no assertion would ever catch.
-const SURVIVAL_ATLAS := "res://assets/kenney/survival/Textures/colormap.png"
-const CAR_ATLAS := "res://assets/kenney/car/Textures/colormap.png"
+static var SURVIVAL_ATLAS := ScPaths.rebase("res://assets/kenney/survival/Textures/colormap.png")
+static var CAR_ATLAS := ScPaths.rebase("res://assets/kenney/car/Textures/colormap.png")
 
 ## What shape stands in for the model.
 enum Shape {

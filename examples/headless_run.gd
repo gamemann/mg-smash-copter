@@ -42,7 +42,7 @@ const SECTIONS := 27
 ## checks that already ran still print ok, the ones after it never happen, and the section
 ## counter is satisfied because the section announced itself on the way in. dot-settings
 ## reported "8 sections, 63 passed, 0 failed" and exited 0 with eight checks missing.
-const CHECKS := 204
+const CHECKS := 205
 
 const TICK_RATE := 64
 const TICK := 1.0 / float(TICK_RATE)
@@ -1935,6 +1935,19 @@ func _test_delivery() -> void:
 	_check(referenced > 0, "the prop scenes name their art by path", "%d references" % referenced)
 	_check(missing.is_empty(), "every model and atlas a prop scene names is in this repository", ", ".join(missing))
 
+	# Form three: a script naming this game's own file by a bare `"res://…"` resolves it
+	# against the HOST's root once mounted. Every such path is rebased where it is defined
+	# (`static var X := ScPaths.rebase("res://…")`), because a `const` rebased at each use
+	# is one new use away from a prop that silently does not spawn in a delivered round.
+	# Armed: with `sc_content.gd`'s CRATE_SCENE put back to a bare `const`, this fails and
+	# names the line.
+	var bare := _bare_own_paths()
+	_check(
+		_scripts_here().size() > 0 and bare.is_empty(),
+		"no shipped script names this game's own file by a bare res:// path",
+		", ".join(bare)
+	)
+
 	_finished()
 
 
@@ -2539,3 +2552,51 @@ func _dispose(game: ScGame) -> void:
 	remove_child(game)
 	game.free()
 	await get_tree().process_frame
+
+
+## Every bare `"res://…"` string in a SHIPPED script that names one of this game's own
+## directories, as `file:line`. See the form-three check that calls it.
+##
+## The same rule `dot-server-deploy/tools/check.sh` counts, asked here because that tool is
+## not what somebody adding a file runs: comments are prose and skipped, a literal already
+## inside `<Game>Paths.rebase("…")` is the fixed form and skipped, and a path whose first
+## segment this game does not ship — `res://addons/…`, `res://audio/…` in a game with no
+## audio — names the HOST's file and is right as it stands.
+func _bare_own_paths() -> PackedStringArray:
+	var skip := ["addons", "examples", "tools", "screenshots"]
+	var owned := PackedStringArray()
+
+	for directory: String in DirAccess.get_directories_at("res://"):
+		if not directory.begins_with(".") and not skip.has(directory):
+			owned.append(directory)
+
+	var wrapped := RegEx.create_from_string("[A-Za-z0-9_]*Paths\\.rebase\\(\"res://[^\"]*\"\\)")
+	var bare := RegEx.create_from_string("\"res://([^/\"]+)")
+	var hits := PackedStringArray()
+	var pending: Array[String] = []
+
+	for directory: String in owned:
+		pending.append("res://".path_join(directory))
+
+	while not pending.is_empty():
+		var at: String = pending.pop_back()
+
+		for sub: String in DirAccess.get_directories_at(at):
+			pending.append(at.path_join(sub))
+
+		for file: String in DirAccess.get_files_at(at):
+			if not file.ends_with(".gd"):
+				continue
+
+			var path := at.path_join(file)
+			var lines := FileAccess.get_file_as_string(path).split("\n")
+
+			for i in lines.size():
+				if lines[i].strip_edges().begins_with("#"):
+					continue
+
+				for found in bare.search_all(wrapped.sub(lines[i], "", true)):
+					if owned.has(found.get_string(1)):
+						hits.append("%s:%d" % [path, i + 1])
+
+	return hits

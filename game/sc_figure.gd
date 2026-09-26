@@ -37,17 +37,18 @@ const ScPaths := preload("sc_paths.gd")
 
 const CHANNEL := "sc.figure"
 
-const MODEL := "res://assets/kenney/characters/character-a.glb"
+## Rebased where it is defined, like the atlases below: see [method ScPaths.rebase].
+static var MODEL := ScPaths.rebase("res://assets/kenney/characters/character-a.glb")
 
 ## Six ordinary people. Every Blocky Character carries byte-identical geometry and UVs, so
 ## the variety is a texture and nothing else — vendoring six GLBs would be six copies of one.
-const ATLASES := [
-	"res://assets/kenney/characters/Textures/texture-a.png",
-	"res://assets/kenney/characters/Textures/texture-b.png",
-	"res://assets/kenney/characters/Textures/texture-c.png",
-	"res://assets/kenney/characters/Textures/texture-e.png",
-	"res://assets/kenney/characters/Textures/texture-f.png",
-	"res://assets/kenney/characters/Textures/texture-k.png",
+static var ATLASES: Array[String] = [
+	ScPaths.rebase("res://assets/kenney/characters/Textures/texture-a.png"),
+	ScPaths.rebase("res://assets/kenney/characters/Textures/texture-b.png"),
+	ScPaths.rebase("res://assets/kenney/characters/Textures/texture-c.png"),
+	ScPaths.rebase("res://assets/kenney/characters/Textures/texture-e.png"),
+	ScPaths.rebase("res://assets/kenney/characters/Textures/texture-f.png"),
+	ScPaths.rebase("res://assets/kenney/characters/Textures/texture-k.png"),
 ]
 
 ## How much of the side's colour goes on the torso. Enough to read at the far corner of the
@@ -91,7 +92,7 @@ func build(height: float, atlas_path: String, colour: Color) -> void:
 		_model.queue_free()
 		_model = null
 
-	var scene: Variant = load(ScPaths.rebase(MODEL))
+	var scene: Variant = load(MODEL)
 
 	if scene is PackedScene:
 		_model = (scene as PackedScene).instantiate() as Node3D
@@ -100,7 +101,7 @@ func build(height: float, atlas_path: String, colour: Color) -> void:
 		# A capsule rather than nothing. An invisible player is the bug this file exists to
 		# end; a grey one is a player whose art did not ship, which is a lesser thing.
 		DotLog.warn(CHANNEL, "no character model; drawing a capsule", {
-			"path": ScPaths.rebase(MODEL),
+			"path": MODEL,
 		})
 		_model = _capsule(height, colour)
 		add_child(_model)

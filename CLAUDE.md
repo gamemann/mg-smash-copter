@@ -62,7 +62,7 @@ assets/kenney/      eight CC0 models and two atlases
 assets/{blaster-kit,melee,arms}/  the weapon pack's own art, vendored
 textures/prototype/ six CC0 prototype textures, one per role
 scenes/             sc_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (204), dedicated (69), headless_net (186)
+examples/           headless_run (205), dedicated (69), headless_net (186)
 tools/              shot.gd/.tscn/.sh — render a frame and look at it; any --sc-* is config
                     net_shot.gd/.tscn — `shot.sh --view=walk`: a CONNECTED client running,
                     rendered and measured (key to motion, corrections, eye speed per frame)
@@ -235,7 +235,7 @@ These are separate from the list above because none of them can happen until the
 
 ## Decision 7: no `class_name`, anywhere in this repository
 
-Every script here is reached by a relative `preload`, every subclass by a relative `extends`, and every `res://` string this game writes about its own files goes through `ScPaths.rebase()`. That is not a style: **a mounted dot-cloud pack's `class_name` globals are not registered in the host**, so a delivered game that used one would mount, load its scenes, and have every script in it dead with nothing reporting a thing.
+Every script here is reached by a relative `preload`, every subclass by a relative `extends`, and every `res://` string this game writes about its own files goes through `ScPaths.rebase()`. That is not a style: **a mounted dot-cloud pack's `class_name` globals are not registered in the host**, so a delivered game that used one would mount, load its scenes, and have every script in it dead with nothing reporting a thing. **A path is rebased where it is DEFINED, not where it is used:** `static var CRATE_SCENE := ScPaths.rebase("res://…")` rather than a `const` wrapped at every call site. Both are correct today; the second is one new call site away from a prop that does not spawn in a delivered round, and `dot-server-deploy/tools/check.sh` counted all of them (31 across this game and its sibling) because it cannot follow a `const` to its uses. headless_run's delivery section scans every shipped script for a bare `"res://…"` naming one of this game's own directories and fails naming the line; it was armed by putting `sc_content.gd`'s CRATE_SCENE back to a bare `const`.
 
 `dot-server-deploy/tools/check.sh` refuses a new one in any game repository, which is what keeps it that way.
 
@@ -313,7 +313,7 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 27 sections, 204 checks
+godot --headless --path . res://examples/headless_run.tscn   # 27 sections, 205 checks
 godot --headless --path . res://examples/dedicated.tscn      # 10 sections, 69 checks
 godot --headless --path . res://examples/headless_net.tscn   # 19 sections, 186 checks
 tools/shot.sh --view=field
