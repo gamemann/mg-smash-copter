@@ -384,9 +384,22 @@ func _mod_hurt(id: StringName, amount: float) -> DotResult:
 
 
 ## A round is everybody's new body: a noclip or a freeze from last round ends, god carries.
-func _on_round_began_for_tools(_number: int, _layout: StringName) -> void:
+##
+## [b]And a new layout is a new map.[/b] Every `return` point is a place above some
+## platform, and a round on a different layout has its platforms somewhere else, so
+## `return` would drop a player into the air where one used to be. The history is
+## cleared when the layout changes and kept when it does not (`[modtools-return-1]`).
+func _on_round_began_for_tools(_number: int, layout: StringName) -> void:
 	for key: StringName in (game as ScGame).players:
 		mod_player_respawned(StringName(String(key).trim_prefix("u")))
+
+	if layout != _tools_layout and mod_tools != null:
+		mod_tools.clear_history()
+	_tools_layout = layout
+
+
+## The layout the last round began on, for [method _on_round_began_for_tools].
+var _tools_layout: StringName = &""
 
 
 ## The team seam dot-chat and dot-voice both ask for, which the base cannot wire.

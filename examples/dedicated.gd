@@ -21,7 +21,7 @@ const ScPlayer := preload("../game/sc_player.gd")
 ## and those are what this is about.
 
 const SECTIONS := 10
-const CHECKS := 69
+const CHECKS := 70
 
 ## Everything this run writes, and it is deleted on the way in and on the way out.
 ##
@@ -693,6 +693,23 @@ func _test_the_live_tools() -> void:
 		_said(listed, "blind") and _said(listed, "beacon") and not _said(listed, "draws no"),
 		"`modtools` lists both as supported", " | ".join(listed)
 	)
+
+	# `[modtools-return-1]`: a return point survives a round on the same layout and not
+	# one on another, because a point above a platform is only a place while the platform
+	# is there. The handler is called as the round's signal calls it.
+	var _moved := _run_command("send Pilot Pilot")
+	for _i in range(2):
+		await get_tree().process_frame
+	var had_return: bool = tools.call("can_return", &"616")
+	var here: StringName = services.get("_tools_layout")
+	services.call("_on_round_began_for_tools", 90, here)
+	var kept: bool = tools.call("can_return", &"616")
+	services.call("_on_round_began_for_tools", 91, &"a_layout_that_is_not_this_one")
+	var cleared: bool = not tools.call("can_return", &"616")
+	services.call("_on_round_began_for_tools", 92, here)
+	_check(had_return and kept and cleared,
+		"a return point survives a round on the same layout and not one on another",
+		"had %s, kept %s, cleared %s" % [had_return, kept, cleared])
 
 	var slain := _run_command("slay Pilot")
 	_check(not player.is_alive(), "`slay Pilot` puts them out, as ordinary damage", " | ".join(slain))
