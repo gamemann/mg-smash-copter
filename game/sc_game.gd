@@ -1264,6 +1264,9 @@ func _place_players() -> void:
 	if standing.is_empty():
 		return
 
+	var island := ScLayouts.islands(platforms.cells(), layout.jumps if layout != null else 0)
+	var claimed: Dictionary = {}
+
 	for team in range(1, config.team_count + 1):
 		var roster := players_on(team)
 
@@ -1275,6 +1278,19 @@ func _place_players() -> void:
 		# number of sides so that six teams do not all start in the middle.
 		var slot := (team - 1) * maxi(standing.size() / maxi(config.team_count, 1), 1)
 		var index: int = standing[clampi(slot, 0, standing.size() - 1)]
+
+		# [b]And not onto ground another side can already get to while there is ground no
+		# side has been given.[/b] The field is in row order, so the spread above puts two
+		# sides at the two ends of the first column — which on a field that is one piece is
+		# the length of a bridge apart, and on Two Islands was both sides on one island and
+		# nobody on the other. A layout that is all one island never takes this branch.
+		if claimed.has(island[index]):
+			for other: int in standing:
+				if not claimed.has(island[other]):
+					index = other
+					break
+
+		claimed[island[index]] = true
 		var deck := platforms.deck_at(index)
 
 		for seat in range(roster.size()):

@@ -250,9 +250,18 @@ static func all(config: ScConfig) -> Array[Layout]:
 		&"islands", "Two Islands", 10.0, Gaps.ENDS, Bridges.NONE,
 		"Two islands and a lot of air between them. Nobody is crossing."
 	)
-	islands.pitch_scale = 1.15
-	# Within an island, and only within one: the hole between them is the blurb.
-	islands.jumps = Jumps.ALONG_ROWS
+	# [b]Four islands until 2026-09-27, under a blurb that says two.[/b] The rows were 13.5 m
+	# of air apart with no bridge, so each end of each row was an island of its own — two
+	# platforms nobody could leave, four of them, measured with [method islands] — and two
+	# sides started on two of them and never met. The rows are pulled in to a jump apart now
+	# and the columns in a little, so each end is ONE island of four platforms crossed every
+	# way: 1.8 m of air along a row, 1.7 m across one and 2.6 m on a diagonal, against the
+	# 2.9 m a runner reaches off a corner their own run has dipped. Between the two islands
+	# is the missing middle column, 14.1 m of air that no jump reaches — and the cannon's tube
+	# stands in it, 7 m from the nearest edge, so nothing needs moving half a row over.
+	islands.pitch_scale = 1.08
+	islands.row_pitch_scale = 0.51
+	islands.jumps = Jumps.ALONG_ROWS | Jumps.ACROSS_ROWS | Jumps.DIAGONALS
 	out.append(islands)
 
 	var spine := _make(
@@ -363,6 +372,61 @@ static func pairs(cells: Array[Vector3i]) -> Array[Vector3i]:
 				out.append(Vector3i(i, at[diagonal], Jumps.DIAGONALS))
 
 	return out
+
+
+## Which island each cell is on: a number per entry of [param cells], the same for every
+## two cells a player can get between on foot.
+##
+## [b]Walked or jumped, and only the jumps a layout means.[/b] A bridge joins the two
+## platforms it rests on; a pair [method pairs] finds joins them only if [param jumps] names
+## its kind — the suite's reach section holds every meant jump inside a running jump and
+## every other one outside even a flat one, which is what makes a declaration a fact about
+## where a person can go. An island is numbered by the first cell on it, so the numbers are
+## the field's own order and two machines agree about them.
+static func islands(cells: Array[Vector3i], jumps: int) -> PackedInt32Array:
+	var root := PackedInt32Array()
+	var at: Dictionary = {}
+
+	for i in range(cells.size()):
+		root.append(i)
+
+		if cells[i].z == 0:
+			at[Vector2i(cells[i].x, cells[i].y)] = i
+
+	var joins: Array[Vector2i] = []
+
+	for i in range(cells.size()):
+		var cell := cells[i]
+
+		if cell.z == 1:
+			for row in [cell.y, cell.y + 1]:
+				var end: int = at.get(Vector2i(cell.x, row), -1)
+
+				if end >= 0:
+					joins.append(Vector2i(i, end))
+
+	for pair: Vector3i in pairs(cells):
+		if (jumps & pair.z) != 0:
+			joins.append(Vector2i(pair.x, pair.y))
+
+	for join in joins:
+		var a := _island_of(root, join.x)
+		var b := _island_of(root, join.y)
+		root[maxi(a, b)] = mini(a, b)
+
+	var out := PackedInt32Array()
+
+	for i in range(cells.size()):
+		out.append(_island_of(root, i))
+
+	return out
+
+
+static func _island_of(root: PackedInt32Array, i: int) -> int:
+	while root[i] != i:
+		i = root[i]
+
+	return i
 
 
 ## The layout for a round, drawn by weight from [param stream].

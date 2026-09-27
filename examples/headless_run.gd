@@ -34,7 +34,7 @@ const ScSpectate := preload("../game/sc_spectate.gd")
 ## `set_physics_process(false)` goes on first and every section advances the world itself.
 
 ## Sections entered, against sections that ran to their last line.
-const SECTIONS := 28
+const SECTIONS := 29
 
 ## And the total this counter cannot be.
 ##
@@ -42,7 +42,7 @@ const SECTIONS := 28
 ## checks that already ran still print ok, the ones after it never happen, and the section
 ## counter is satisfied because the section announced itself on the way in. dot-settings
 ## reported "8 sections, 63 passed, 0 failed" and exited 0 with eight checks missing.
-const CHECKS := 209
+const CHECKS := 216
 
 const TICK_RATE := 64
 const TICK := 1.0 / float(TICK_RATE)
@@ -55,6 +55,13 @@ var _failures := PackedStringArray()
 
 ## Every world this run has built and not yet taken down.
 var _worlds: Array[ScGame] = []
+
+## A player whose run is being measured, frame by frame, whichever helper is driving them:
+## the horizontal metres they covered and the fastest they went. See [method _physics_frame].
+var _tracked: ScPlayer = null
+var _tracked_at := Vector3.ZERO
+var _covered := 0.0
+var _top_speed := 0.0
 
 
 func _ready() -> void:
@@ -89,6 +96,7 @@ func _run() -> void:
 	await _test_the_ring_cover()
 	await _test_the_zigzag()
 	await _test_the_spine()
+	await _test_two_islands()
 	await _test_a_slope_holds()
 	await _test_blind_and_beacon_drawn()
 	await _test_somebody_out_watches()
@@ -1744,6 +1752,114 @@ func _test_the_spine() -> void:
 	_finished()
 
 
+## Two Islands' blurb: "Two islands and a lot of air between them. Nobody is crossing." Until
+## 2026-09-27 it was four: the rows were 13.5 m apart with no bridge, so each end of each row
+## was two platforms nobody could leave, and the two sides started on two of them.
+func _test_two_islands() -> void:
+	_section("Two Islands is two islands, crossed every way, and nobody crosses between them")
+
+	var game := await _world(func(c: ScConfig) -> void:
+		c.cannon_enabled = false
+		c.specials_enabled = false
+		c.survival_seconds = 600.0
+		c.layout_ids = PackedStringArray(["islands"])
+	)
+	var platforms := game.platforms
+	var config := game.config
+
+	_check(game.layout != null and game.layout.id == &"islands",
+		"the round is laid out as Two Islands",
+		String(game.layout.id) if game.layout != null else "none")
+
+	# What a player can get to, off the built field: bridges, and the jumps the layout means
+	# (which the reach section holds to a running jump, both ways).
+	var island := ScLayouts.islands(platforms.cells(), game.layout.jumps)
+	var sizes: Dictionary = {}
+
+	for i in range(platforms.count()):
+		sizes[island[i]] = int(sizes.get(island[i], 0)) + 1
+
+	_check(sizes.size() == 2 and sizes.values().all(func(n: int) -> bool: return n == 4),
+		"the field is two islands of four platforms",
+		"%d islands: %s" % [sizes.size(), str(sizes.values())])
+
+	# Two sides, one to an island. The field is in row order, and the old spread put both
+	# at the two ends of the first column.
+	var runner := game.add_player(&"runner", "Runner", 1)
+	var other := game.add_player(&"other", "Other", 2)
+	game.start()
+	await _step(game, 20)
+	var mine := platforms.index_at(runner.controller.state.position.x, runner.controller.state.position.z)
+	var theirs := platforms.index_at(other.controller.state.position.x, other.controller.state.position.z)
+	_check(mine >= 0 and theirs >= 0 and island[mine] != island[theirs],
+		"two sides start on the two islands, one each",
+		"%s and %s" % [
+			_cell_name(platforms, mine) if mine >= 0 else "nowhere",
+			_cell_name(platforms, theirs) if theirs >= 0 else "nowhere"])
+
+	# Round the left island on every kind of jump it means: along a row, across the rows,
+	# back along, and a diagonal. Each from the middle of a platform leaning under the
+	# runner, at the lip, as a person would.
+	var cells := [Vector2i(0, 0), Vector2i(1, 0), Vector2i(1, 1), Vector2i(0, 1), Vector2i(1, 0)]
+	var route: Array[int] = []
+
+	for cell: Vector2i in cells:
+		route.append(_deck_at_cell(platforms, cell.x, cell.y))
+
+	var length := 0.0
+
+	for leg in range(route.size() - 1):
+		var a := platforms.deck_at(route[leg]).centre
+		var b := platforms.deck_at(route[leg + 1]).centre
+		length += Vector2(b.x - a.x, b.z - a.z).length()
+
+	runner.place_at(platforms.deck_at(route[0]).centre + Vector3.UP * 0.2, 0.0)
+	await _step(game, 20)
+	_track(runner)
+
+	var made := PackedStringArray()
+
+	for leg in range(route.size() - 1):
+		await _walk_to(game, runner, platforms.deck_at(route[leg]).centre)
+		var landed := await _jump_across(game, runner, route[leg], route[leg + 1])
+		made.append("%s%s" % [_cell_name(platforms, route[leg + 1]), "" if landed else " MISSED"])
+
+		if not landed:
+			break
+
+	await _walk_to(game, runner, platforms.deck_at(route[route.size() - 1]).centre)
+	var covered := _covered
+	var top := _top_speed
+	_track(null)
+	var max_speed := ScPlayer.tunables_for(config, null).max_speed
+
+	_check(made.size() == route.size() - 1 and not ", ".join(made).contains("MISSED"),
+		"a runner goes round an island along, across, along and on a diagonal",
+		", ".join(made))
+	# [b]At a run, over the whole route[/b] ([bot-drive-1]): a bot that crawled, or that was
+	# placed rather than driven, passes the landing checks and fails this one.
+	_check(covered >= length * 0.95 and top >= max_speed * 0.95,
+		"and covers the route at a run",
+		"%.1f m covered of a %.1f m route, top speed %.2f of %.2f m/s" % [
+			covered, length, top, max_speed])
+	_check(runner.is_alive() and runner.standing_on == route[route.size() - 1]
+			and platforms.standing_count() == platforms.count(),
+		"and ends on the island, with all of it still up",
+		"on %d, alive %s, %d of %d up" % [runner.standing_on, runner.is_alive(),
+			platforms.standing_count(), platforms.count()])
+
+	# And the other island is not reached: straight at it from the inner edge of this one,
+	# running, is a fall. That is "nobody is crossing".
+	var across := _deck_at_cell(platforms, 3, 0)
+	var crossed := await _jump_across(game, runner, route[route.size() - 1], across)
+	_check(not crossed and runner.controller.state.position.y < config.deck_height - 3.0,
+		"and running at the other island is a fall",
+		"%.1f m" % runner.controller.state.position.y)
+
+	await _dispose(game)
+	_finished()
+
+
 ## The equilibrium lean one runner's weight at a bridge's end, or at a platform's edge, puts
 ## on it, on The Spine's own field.
 func _spine_lean(on_bridge: bool) -> float:
@@ -2607,6 +2723,20 @@ func _step(game: ScGame, ticks: int) -> void:
 
 func _physics_frame() -> void:
 	await get_tree().physics_frame
+
+	if _tracked != null and is_instance_valid(_tracked) and _tracked.controller != null:
+		var state := _tracked.controller.state
+		_covered += Vector2(state.position.x - _tracked_at.x, state.position.z - _tracked_at.z).length()
+		_top_speed = maxf(_top_speed, Vector2(state.velocity.x, state.velocity.z).length())
+		_tracked_at = state.position
+
+
+## Starts measuring [param player]'s run from where they stand.
+func _track(player: ScPlayer) -> void:
+	_tracked = player
+	_tracked_at = player.controller.state.position if player != null else Vector3.ZERO
+	_covered = 0.0
+	_top_speed = 0.0
 
 
 func _dispose(game: ScGame) -> void:
