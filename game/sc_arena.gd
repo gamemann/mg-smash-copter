@@ -421,6 +421,11 @@ func _build_showdown() -> void:
 		if inward.length() > 0.001:
 			openings.append(inward.normalized())
 
+		# And the two flank catwalks, one to the perch on either side of this pad.
+		for walk: Dictionary in flank_walks():
+			if int(walk["pad"]) == index:
+				openings.append(walk["out"] as Vector2)
+
 		_pad(
 			"Pad%d" % index,
 			centre,
@@ -458,6 +463,8 @@ func _build_showdown() -> void:
 
 	for index in range(cover.size()):
 		_cover_block("RingCover%d" % index, cover[index])
+
+	_build_flanks()
 
 
 ## The cover on the showdown ring: one block per team, on the line from the ring's middle
@@ -504,6 +511,120 @@ const RING_COVER_SIZE := Vector3(2.4, 1.1, 0.6)
 
 ## How far out from the ring's middle the cover stands, as a fraction of its half-width.
 const RING_COVER_OUT := 0.5
+
+
+# --- The flanks ---------------------------------------------------------------
+
+## How wide a perch is: the small pad on the flank between two teams' pads.
+const PERCH_SIZE := 8.0
+
+## How far a flank catwalk's surface sits under the pads it joins, in metres.
+##
+## A flank catwalk leaves a square pad at an angle (with two sides, from its very corner),
+## so it runs half its own width INTO both ends to leave no notch of air beside the join —
+## and two coplanar tops fight over every pixel of that overlap. Two centimetres down, the
+## pad's own surface wins and the step back up is nothing the controller notices.
+const FLANK_DROP := 0.02
+
+## Where perch [param index] of [param count] stands: on the pads' own circle, half-way
+## round between pad [param index] and the next one.
+func perch_point(index: int, count: int) -> Vector3:
+	var teams := maxi(count, 1)
+	var angle := TAU * (float(index) + 0.5) / float(teams)
+	var centre := showdown_centre()
+
+	return Vector3(
+		centre.x + cos(angle) * config.corner_distance,
+		centre.y,
+		centre.z + sin(angle) * config.corner_distance
+	)
+
+
+## Every flank catwalk, as one Dictionary each: `pad` and `perch` (indices), `out` (the
+## direction it leaves the pad in, as a Vector2 on XZ), `back` (the direction it leaves the
+## perch in), `from` and `to` (where its centre line crosses the pad's and the perch's
+## edges, on the surface), and `centre`, `yaw` and `length` (the slab, overlap included).
+##
+## [b]Added 2026-09-29: the long way round.[/b] The ring's cover faces the pads, so until
+## this a survivor who took the ring and crouched behind the block facing an enemy pad
+## was out of reach of everybody but somebody willing to walk the same catwalk into them.
+## A perch between every two pads, joined to both by a catwalk that never touches the
+## ring, is a second route to an enemy's pad and — with two sides — a line on the ring
+## from ninety degrees off, where no block covers anybody. One description: the pads'
+## kerb openings, the perches, the slabs and the suite all read this.
+func flank_walks() -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	var teams := config.team_count
+
+	for perch in range(teams):
+		var at := perch_point(perch, teams)
+
+		for pad: int in [perch, (perch + 1) % teams]:
+			var corner := corner_point(pad, teams)
+			var line := Vector2(at.x - corner.x, at.z - corner.z)
+
+			if line.length() < 0.001:
+				continue
+
+			var d := line.normalized()
+			var leave := _square_exit(config.corner_size * 0.5, d)
+			var arrive := _square_exit(PERCH_SIZE * 0.5, d)
+			var overlap := CATWALK_WIDTH * 0.5
+			var start := leave - overlap
+			var length := line.length() - arrive + overlap - start
+			var mid := start + length * 0.5
+			var surface := corner.y - FLANK_DROP
+
+			out.append({
+				"pad": pad,
+				"perch": perch,
+				"out": d,
+				"back": -d,
+				"from": Vector3(corner.x + d.x * leave, corner.y, corner.z + d.y * leave),
+				"to": Vector3(at.x - d.x * arrive, at.y, at.z - d.y * arrive),
+				"centre": Vector3(corner.x + d.x * mid, surface, corner.z + d.y * mid),
+				"yaw": atan2(d.x, d.y),
+				"length": length,
+			})
+
+	return out
+
+
+## How far from the middle of an axis-aligned square of half-width [param half] a line in
+## direction [param d] leaves it.
+static func _square_exit(half: float, d: Vector2) -> float:
+	return half / maxf(absf(d.x), absf(d.y))
+
+
+func _build_flanks() -> void:
+	var walks := flank_walks()
+
+	for perch in range(config.team_count):
+		var openings: Array[Vector2] = []
+
+		for walk: Dictionary in walks:
+			if int(walk["perch"]) == perch:
+				openings.append(walk["back"] as Vector2)
+
+		_pad(
+			"Perch%d" % perch,
+			perch_point(perch, config.team_count),
+			Vector2(PERCH_SIZE, PERCH_SIZE),
+			ScTextures.Role.SAFE,
+			true,
+			openings
+		)
+
+	for index in range(walks.size()):
+		var walk := walks[index]
+		var slab := _pad(
+			"Flank%d" % index,
+			walk["centre"] as Vector3,
+			Vector2(CATWALK_WIDTH, float(walk["length"])),
+			ScTextures.Role.ARENA,
+			false
+		)
+		slab.rotation = Vector3(0.0, float(walk["yaw"]), 0.0)
 
 
 func _cover_block(node_name: String, at: Transform3D) -> void:

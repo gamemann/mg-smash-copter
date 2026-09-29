@@ -206,6 +206,14 @@ func _place_camera(game: ScGame, view: String) -> void:
 			var pad := game.arena.corner_point(0, game.config.team_count)
 			camera.global_position = pad + Vector3.UP * 1.7
 			camera.look_at(ring_middle + Vector3.UP * 0.6, Vector3.UP)
+		"flank":
+			# From behind perch 0 and above it, at the ring: the perch in front, the two flank
+			# catwalks running off to the pads either side, and the ring's blocks side-on.
+			var ring_middle := game.arena.showdown_centre()
+			var perch := game.arena.perch_point(0, game.config.team_count)
+			var away := Vector3(perch.x - ring_middle.x, 0.0, perch.z - ring_middle.z).normalized()
+			camera.global_position = perch + away * 14.0 + Vector3.UP * 9.0
+			camera.look_at(ring_middle + Vector3.UP * 0.6, Vector3.UP)
 		"showdown":
 			var middle := game.arena.showdown_centre()
 			camera.global_position = middle + Vector3(

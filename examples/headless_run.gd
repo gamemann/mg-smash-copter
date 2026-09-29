@@ -34,7 +34,7 @@ const ScSpectate := preload("../game/sc_spectate.gd")
 ## `set_physics_process(false)` goes on first and every section advances the world itself.
 
 ## Sections entered, against sections that ran to their last line.
-const SECTIONS := 29
+const SECTIONS := 30
 
 ## And the total this counter cannot be.
 ##
@@ -42,7 +42,7 @@ const SECTIONS := 29
 ## checks that already ran still print ok, the ones after it never happen, and the section
 ## counter is satisfied because the section announced itself on the way in. dot-settings
 ## reported "8 sections, 63 passed, 0 failed" and exited 0 with eight checks missing.
-const CHECKS := 216
+const CHECKS := 227
 
 const TICK_RATE := 64
 const TICK := 1.0 / float(TICK_RATE)
@@ -94,6 +94,7 @@ func _run() -> void:
 	await _test_the_throat()
 	await _test_the_showdown_walk()
 	await _test_the_ring_cover()
+	await _test_the_flanks()
 	await _test_the_zigzag()
 	await _test_the_spine()
 	await _test_two_islands()
@@ -1468,6 +1469,186 @@ func _test_the_ring_cover() -> void:
 		_check(hidden == sides and seen == sides,
 			"and from each pad it hides somebody crouched behind it, not somebody standing",
 			"%d of %d hidden, %d of %d seen over it" % [hidden, sides, seen, sides])
+
+		await _dispose(game)
+
+	_finished()
+
+
+## The flanks (2026-09-29): a perch between every two pads, joined to both by a catwalk
+## that never touches the ring. Built from [method ScArena.flank_walks], walked end to end
+## at a run by a bot from its own pad to the next side's, and — with two sides — the line
+## on the ring the blocks do not cover. `tools/shot.sh --view=flank` is the render.
+func _test_the_flanks() -> void:
+	_section("the flanks: a perch between every two pads, the long way round at a run")
+
+	for sides: int in [2, 3]:
+		var game := await _world(func(c: ScConfig) -> void:
+			c.team_count = sides
+			c.cannon_enabled = false
+			c.specials_enabled = false
+		)
+		await _physics_frame()
+
+		var config := game.config
+		var middle := game.arena.showdown_centre()
+		var walks := game.arena.flank_walks()
+		var perches := 0
+		var slabs := 0
+		var thin := PackedStringArray()
+
+		for child: Node in game.arena.find_children("*", "StaticBody3D", true, false):
+			var kerb_sides: Dictionary = {}
+
+			for piece: Node in child.get_children():
+				if String(piece.name).begins_with("KerbHit"):
+					kerb_sides[String(piece.name).trim_prefix("KerbHit").get_slice("_", 0)] = true
+
+			if String(child.name).begins_with("Perch"):
+				perches += 1
+				if kerb_sides.size() != 4:
+					thin.append("%s has %d" % [child.name, kerb_sides.size()])
+			elif String(child.name).begins_with("Flank"):
+				slabs += 1
+				if kerb_sides.size() != 2:
+					thin.append("%s has %d" % [child.name, kerb_sides.size()])
+
+		_check(perches == sides and slabs == sides * 2 and walks.size() == sides * 2
+				and thin.is_empty(),
+			"with %d sides, a perch between every two pads and a catwalk to each" % sides,
+			"%d perches, %d slabs of %d described%s" % [perches, slabs, walks.size(),
+				"" if thin.is_empty() else ", " + ", ".join(thin)])
+
+		# And open where each one arrives: a ray at shin height from the middle of the pad,
+		# and of the perch, out along the flank to a metre past the edge meets no kerb. A
+		# runner is thrown over a closed kerb since dot-player-controller 2e6d930 and the
+		# drive below cannot see one (armed: it passed with the openings uncut), so this is
+		# what holds them — a walker, or a body sliding, is still stopped by one.
+		var space_here := game.arena.get_world_3d().direct_space_state
+		var blocked := PackedStringArray()
+
+		for index in range(walks.size()):
+			var walk := walks[index]
+			var d := walk["out"] as Vector2
+			var pad_mid := game.arena.corner_point(int(walk["pad"]), sides)
+			var perch_mid := game.arena.perch_point(int(walk["perch"]), sides)
+			var shin := Vector3.UP * 0.15
+			var past := Vector3(d.x, 0.0, d.y)
+			var legs := [
+				[pad_mid + shin, (walk["from"] as Vector3) + past + shin],
+				[perch_mid + shin, (walk["to"] as Vector3) - past + shin],
+			]
+
+			for leg: Array in legs:
+				var hit := space_here.intersect_ray(
+					PhysicsRayQueryParameters3D.create(leg[0] as Vector3, leg[1] as Vector3))
+
+				if not hit.is_empty():
+					blocked.append("Flank%d at %s" % [index, (hit["collider"] as Node).name])
+
+		_check(blocked.is_empty(),
+			"and the kerb is open wherever a flank arrives, at both ends",
+			"%d ends clear%s" % [walks.size() * 2 - blocked.size(),
+				"" if blocked.is_empty() else ": " + ", ".join(blocked)])
+
+		# The long way round never touches the ring: every flank's centre line stays further
+		# from the ring's middle than the ring's own corners plus half a catwalk.
+		var ring_corner := config.corner_size * 0.85 * sqrt(2.0)
+		var nearest := INF
+
+		for walk: Dictionary in walks:
+			var a := walk["from"] as Vector3
+			var b := walk["to"] as Vector3
+			var closest := Geometry3D.get_closest_point_to_segment(middle, a, b)
+			nearest = minf(nearest, Vector2(closest.x - middle.x, closest.z - middle.z).length())
+
+		_check(nearest > ring_corner + ScArena.CATWALK_WIDTH * 0.5 + 2.0,
+			"and no flank comes near the ring",
+			"nearest %.1f m from its middle, its corners at %.1f" % [nearest, ring_corner])
+
+		# Driven: from pad 0, at a run, through perch 0 and onto pad 1's middle. Steered at
+		# each waypoint's centre, running the whole way, which is what the kerb openings and
+		# the dropped slab have to let through without a stall.
+		var start := game.arena.corner_point(0, sides)
+		var perch := game.arena.perch_point(0, sides)
+		var goal := game.arena.corner_point(1, sides)
+		var route: Array[Vector3] = [perch, goal]
+		var length := Vector2(perch.x - start.x, perch.z - start.z).length() \
+			+ Vector2(goal.x - perch.x, goal.z - perch.z).length()
+		var runner := game.add_player(&"flanker", "Flanker", 1)
+		runner.place_at(start + Vector3.UP * 0.2, game.arena.showdown_yaw(0, sides))
+		await _step(game, 20)
+		_track(runner)
+
+		var next := 0
+		var ticks := 0
+		var lowest := INF
+
+		for _i in range(int(45.0 * TICK_RATE)):
+			var at := runner.controller.state.position
+			var toward := Vector3(route[next].x - at.x, 0.0, route[next].z - at.z)
+
+			if toward.length() < 1.0:
+				next += 1
+				if next >= route.size():
+					break
+				toward = Vector3(route[next].x - at.x, 0.0, route[next].z - at.z)
+
+			var command := DotFpsCommand.new()
+			command.yaw = rad_to_deg(atan2(-toward.x, -toward.z))
+			command.move = Vector2(0.0, 1.0)
+			runner.controller.apply_command(command)
+			game.simulate(TICK)
+			await _physics_frame()
+			ticks += 1
+			lowest = minf(lowest, runner.controller.state.position.y)
+
+		var covered := _covered
+		var top := _top_speed
+		_track(null)
+		var max_speed := ScPlayer.tunables_for(config, null).max_speed
+		var seconds := float(ticks) / float(TICK_RATE)
+		var ended := runner.controller.state.position
+
+		_check(next >= route.size() and runner.is_alive() and lowest > middle.y - 0.5,
+			"a runner goes pad 0, perch 0, pad 1 without a fall",
+			"reached %d of %d waypoints, lowest %.2f m against %.2f, ended %.1f m from pad 1" % [
+				next, route.size(), lowest, middle.y,
+				Vector2(ended.x - goal.x, ended.z - goal.z).length()])
+		# At a run the whole way: the route over the time is the pace, and a stall on a kerb
+		# or a seam at either end of a slab is a second or more lost.
+		_check(covered >= length * 0.97 and top >= max_speed * 0.95
+				and seconds <= length / max_speed + 1.5,
+			"and at a run: the route in its running time",
+			"%.1f m of %.1f in %.2f s (%.2f s at %.2f m/s), top %.2f" % [
+				covered, length, seconds, length / max_speed, max_speed, top])
+
+		# With two sides a perch is ninety degrees off both blocks, which is the point of it:
+		# somebody crouched behind a ring block, hidden from the pad it faces, is in plain
+		# sight from either perch. With three the angle is 60 and the block still covers.
+		if sides == 2:
+			var space := game.arena.get_world_3d().direct_space_state
+			var cover := game.arena.ring_cover()
+			var seen := 0
+			var asked := 0
+
+			for p in range(sides):
+				var eye := game.arena.perch_point(p, sides) + Vector3.UP * 1.6
+
+				for block in cover:
+					var inward := middle - block.origin
+					inward.y = 0.0
+					inward = inward.normalized()
+					var behind := block.origin + inward * (ScArena.RING_COVER_SIZE.z * 0.5 + 0.4)
+					var crouched := Vector3(behind.x, middle.y + 0.7, behind.z)
+					asked += 1
+
+					if space.intersect_ray(PhysicsRayQueryParameters3D.create(eye, crouched)).is_empty():
+						seen += 1
+
+			_check(seen == asked,
+				"and from either perch, somebody crouched behind either ring block is in sight",
+				"%d of %d lines clear" % [seen, asked])
 
 		await _dispose(game)
 
