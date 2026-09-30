@@ -34,7 +34,7 @@ const ScSpectate := preload("../game/sc_spectate.gd")
 ## `set_physics_process(false)` goes on first and every section advances the world itself.
 
 ## Sections entered, against sections that ran to their last line.
-const SECTIONS := 31
+const SECTIONS := 32
 
 ## And the total this counter cannot be.
 ##
@@ -42,7 +42,7 @@ const SECTIONS := 31
 ## checks that already ran still print ok, the ones after it never happen, and the section
 ## counter is satisfied because the section announced itself on the way in. dot-settings
 ## reported "8 sections, 63 passed, 0 failed" and exited 0 with eight checks missing.
-const CHECKS := 236
+const CHECKS := 244
 
 const TICK_RATE := 64
 const TICK := 1.0 / float(TICK_RATE)
@@ -99,6 +99,7 @@ func _run() -> void:
 	await _test_the_zigzag()
 	await _test_the_spine()
 	await _test_two_islands()
+	await _test_broadside()
 	await _test_a_slope_holds()
 	await _test_blind_and_beacon_drawn()
 	await _test_somebody_out_watches()
@@ -1277,7 +1278,7 @@ func _test_reach() -> void:
 
 		if layout.with_chopper:
 			for i in range(config.chopper_count):
-				var pad := game.arena.chopper_pad(i, config.chopper_count)
+				var pad := game.chopper_pad_on(layout, i)
 
 				if platforms.index_at(pad.x, pad.z) < 0:
 					parked.append("%s chopper %d" % [layout.id, i])
@@ -2161,6 +2162,158 @@ func _test_two_islands() -> void:
 
 	await _dispose(game)
 	_finished()
+
+
+## Broadside's blurb: "Pushed apart, half the bridges, and a chopper over the middle of it."
+## Until 2026-09-30 the chopper was on the Airfield's pad, a third of the way out on a 45
+## degree line — (3,1) here, two jumps from the second side's start and four jumps and a
+## bridge from the first's. It is parked on the middle column now, and this runs both sides
+## to it at the layout's own 3.4 m jumps (which the reach section only measured) and puts
+## each of them in it.
+func _test_broadside() -> void:
+	_section("Broadside's chopper is over the middle, and either side can run to it and take it")
+
+	var game := await _world(func(c: ScConfig) -> void:
+		c.cannon_enabled = false
+		c.specials_enabled = false
+		c.chopper_enabled = true
+		c.survival_seconds = 600.0
+		c.layout_ids = PackedStringArray(["broadside"])
+	)
+	var platforms := game.platforms
+	var config := game.config
+
+	_check(game.layout != null and game.layout.id == &"broadside",
+		"the round is laid out as Broadside",
+		String(game.layout.id) if game.layout != null else "none")
+
+	var first := game.add_player(&"first", "First", 1)
+	var second := game.add_player(&"second", "Second", 2)
+	game.start()
+	# Long enough for the chopper to drop off its pad and come to rest.
+	await _step(game, 96)
+
+	var copter: DotVehicleInstance = null if game._copter_ids.is_empty() \
+		else game.vehicles.get_vehicle(game._copter_ids[0])
+	var parked := copter.body().global_position if copter != null else Vector3.ZERO
+	var middle := _deck_at_cell(platforms, config.columns / 2, 0)
+	var under := platforms.index_at(parked.x, parked.z) if copter != null else -1
+
+	_check(copter != null and under == middle and absf(parked.x) < 0.5
+			and parked.y < config.deck_height + 2.0,
+		"the chopper comes to rest on the middle column, over the field's centre line",
+		"on %s at x %.2f, %.2f m over the decks" % [
+			_cell_name(platforms, under) if under >= 0 else "nothing", parked.x,
+			parked.y - config.deck_height])
+
+	# Where the two sides were dealt, which the routes below start from.
+	var home := _deck_at_cell(platforms, 0, 0)
+	var across := _deck_at_cell(platforms, 1, 1)
+	var first_on := platforms.index_at(first.controller.state.position.x,
+		first.controller.state.position.z)
+	var second_on := platforms.index_at(second.controller.state.position.x,
+		second.controller.state.position.z)
+	_check(first_on == home and second_on == across,
+		"the two sides start at (0,0) and (1,1), a row apart",
+		"%s and %s" % [
+			_cell_name(platforms, first_on) if first_on >= 0 else "nowhere",
+			_cell_name(platforms, second_on) if second_on >= 0 else "nowhere"])
+
+	# The first side: two jumps along its own row. The second: over column 1's bridge to the
+	# first row, and one jump. Each then goes to the machine and gets in, and out again.
+	var near := _deck_at_cell(platforms, 1, 0)
+	var runs := [
+		[first, [[home, near, false], [near, middle, false]]],
+		[second, [[across, near, true], [near, middle, false]]],
+	]
+	var metres: Array[float] = []
+	var fastest := INF
+	var took := PackedStringArray()
+	var max_speed := ScPlayer.tunables_for(config, null).max_speed
+
+	for run: Array in runs:
+		var runner: ScPlayer = run[0]
+		var made := PackedStringArray()
+		_track(runner)
+
+		for leg: Array in run[1]:
+			var landed := false
+
+			if leg[2]:
+				landed = await _run_to(game, runner, platforms.deck_at(leg[1]).centre, 1.0)
+				landed = landed and runner.standing_on == leg[1]
+			else:
+				await _walk_to(game, runner, platforms.deck_at(leg[0]).centre)
+				landed = await _jump_across(game, runner, leg[0], leg[1])
+
+			made.append("%s%s" % [_cell_name(platforms, leg[1]), "" if landed else " MISSED"])
+
+			if not landed:
+				break
+
+		# Guarded, because a runner who fell ended the round and took the machine with it.
+		if copter != null and copter.body() != null:
+			await _run_to(game, runner, copter.body().global_position, 3.5)
+
+		var boarded := game.try_board(runner.player_id)
+		await _step(game, 4)
+		metres.append(_covered)
+		fastest = minf(fastest, _top_speed)
+		_track(null)
+		took.append("%s: %s, %.1f m, %s" % [runner.player_id, ", ".join(made), metres.back(),
+			"in" if boarded.ok and runner.riding else "not in"])
+
+		# Out again, so the other side finds it empty.
+		if runner.riding:
+			var _out := game.try_board(runner.player_id)
+			await _step(game, 20)
+
+		_check(boarded.ok and not ", ".join(made).contains("MISSED"),
+			"%s runs to the chopper and gets in" % runner.player_id, took[took.size() - 1])
+
+	_check(fastest >= max_speed * 0.95, "both at a run, over the 3.4 m jumps",
+		"slower top speed %.2f of %.2f m/s" % [fastest, max_speed])
+	# Over the middle is what makes it contested: neither side has it on the doorstep.
+	var ratio: float = float(metres.max()) / maxf(float(metres.min()), 0.01)
+	_check(metres.size() == 2 and ratio <= 1.5,
+		"and neither side is much nearer it than the other",
+		"%.1f m against %.1f m, %.2f to one" % [metres[0], metres[1], ratio])
+
+	var now := copter.body().global_position if copter != null and copter.body() != null \
+		else Vector3(INF, INF, INF)
+	_check(now.distance_to(parked) < 0.5 and platforms.standing_count() == platforms.count()
+			and first.is_alive() and second.is_alive(),
+		"and it is where it was after both have landed beside it, with everybody up",
+		"moved %.2f m, %d of %d platforms up, alive %s and %s" % [now.distance_to(parked),
+			platforms.standing_count(), platforms.count(), first.is_alive(), second.is_alive()])
+
+	await _dispose(game)
+	_finished()
+
+
+## Runs straight at [param target] until within [param stop] metres of it, or six seconds.
+##
+## And lets go of the key when it gets there: the motor repeats the last command it was
+## handed, so a runner nobody stops keeps running — off the far side of the platform.
+func _run_to(game: ScGame, player: ScPlayer, target: Vector3, stop: float) -> bool:
+	for _i in range(int(6.0 * TICK_RATE)):
+		var at := player.controller.state.position
+		var toward := Vector3(target.x - at.x, 0.0, target.z - at.z)
+
+		if toward.length() < stop:
+			var still := DotFpsCommand.new()
+			still.yaw = player.controller.state.yaw
+			player.controller.apply_command(still)
+			return true
+
+		var command := DotFpsCommand.new()
+		command.yaw = rad_to_deg(atan2(-toward.x, -toward.z))
+		command.move = Vector2(0.0, 1.0)
+		player.controller.apply_command(command)
+		game.simulate(TICK)
+		await _physics_frame()
+
+	return false
 
 
 ## The equilibrium lean one runner's weight at a bridge's end, or at a platform's edge, puts

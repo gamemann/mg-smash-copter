@@ -62,7 +62,7 @@ assets/kenney/      eight CC0 models and two atlases
 assets/{blaster-kit,melee,arms}/  the weapon pack's own art, vendored
 textures/prototype/ six CC0 prototype textures, one per role
 scenes/             sc_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (236), dedicated (70), headless_net (197)
+examples/           headless_run (244), dedicated (70), headless_net (197)
 tools/              shot.gd/.tscn/.sh — render a frame and look at it; any --sc-* is config
                     net_shot.gd/.tscn — `shot.sh --view=walk`: a CONNECTED client running,
                     rendered and measured (key to motion, corrections, eye speed per frame)
@@ -140,6 +140,12 @@ Every other 3D game in this family uses it. A spawn point is a fixed place in th
 ## A catwalk is cut along both edges (2026-09-30)
 
 **Until 2026-09-29 a catwalk was a rectangle measured along its middle**, as if it met the ring and its pad square on. With two or four sides it does; with three a catwalk leaves the square ring at an angle, and the slab ran up to 3.2 m on into the ring, coplanar with it, carrying its kerbs in as stubs on the ring's floor. `ScArena.catwalk(index)` is the description now: each long side ends where it leaves the ring's square (`_line_exit`) and where it meets the pad's, so the slab is a convex prism whose short ends lie along the two edges, and each kerb stops where the band under it meets either edge. `headless_run`'s "a catwalk meets the ring and its pad" reads the BUILT colliders with two, three and four sides: nothing inside the ring or the pad, and a ray 5 cm inside each edge lands on the catwalk right across its width. Armed by the first draft, which ended every side at `ring_half() + 0.3` (0.3 m of air on every side count, three sides still overlapping): 5 of 9 fail. Rendered with `tools/shot.sh --view=junction --sc-team-count=3`.
+
+## Broadside's chopper is over the middle (2026-09-30)
+
+**Broadside's blurb is "Pushed apart, half the bridges, and a chopper over the middle of it", and the chopper was on the Airfield's pad** — `ScArena.chopper_pad`, a third of the way out on a 45 degree line, which on this field is (3,1): two jumps from where the second side starts and four jumps and a bridge from the first, so "somebody is going to take it" was always the same somebody. `Layout.chopper_cell` names the platform a layout's first chopper parks in the middle of ((-1,-1) is the ordinary pad), and `ScGame.chopper_pad_on(layout, index)` is the one place both the round and the suite read it. Broadside's is the middle column's first-row platform: x = 0, on the pillar's axis where a lean moves it least, 12 m off the tube. Server-side only — the machine replicates where it comes to rest, so the wire is unchanged.
+
+`headless_run`'s Broadside section starts two sides ((0,0) and (1,1)), checks the chopper rests on (2,0) at x 0.00, and RUNS each side to it and puts them in it: the first two 3.4 m jumps along its row (26.5 m), the second over column 1's bridge and one jump (34.4 m), top speed 6.41 of 6.40 m/s, 1.30 to one, and the chopper 0.07 m from where it settled with everybody up and all twelve decks standing. It is the first time Broadside's jumps, which the reach section only measured, were driven. Armed with the old pad: 5 of 8 fail (it rests on (3,1) at x 10.32, neither side gets in, 3.70 to one); with the middle column's second row, 5 of 8 too (3.08 to one). The suite's `_run_to` lets go of the key on arrival, because the motor repeats the last command — the first draft's runner, out of the chopper, ran on off the far side of (2,0) and ended the round. Rendered with `tools/shot.sh --view=copter --sc-layout-ids=broadside`, `--view=jump` and `--view=field`.
 
 ## Decision 6: the showdown is somewhere else
 
@@ -339,7 +345,7 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 31 sections, 236 checks
+godot --headless --path . res://examples/headless_run.tscn   # 32 sections, 244 checks
 godot --headless --path . res://examples/dedicated.tscn      # 10 sections, 70 checks
 godot --headless --path . res://examples/headless_net.tscn   # 20 sections, 197 checks
 tools/shot.sh --view=field
@@ -352,6 +358,7 @@ tools/shot.sh --view=junction --sc-team-count=3     # an oblique catwalk meeting
 tools/shot.sh --view=jump --sc-layout-ids=checker   # the jump a layout means, from behind
 tools/shot.sh --view=bridge --sc-layout-ids=spine   # a bridge weighed down at one end, from beside it
 tools/shot.sh --view=field --sc-layout-ids=islands  # two islands of four, the tube in the hole between
+tools/shot.sh --view=copter --sc-layout-ids=broadside  # Broadside's chopper, parked on the middle column
 tools/shot.sh --view=beacon                         # an admin's beacon, from across the field
 tools/shot.sh --view=blind                          # a blinded player's own screen
 tools/shot.sh --view=spectate                       # out, with nobody on your side left: the overview

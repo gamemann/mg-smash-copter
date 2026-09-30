@@ -1330,12 +1330,28 @@ func _place_players() -> void:
 		(players[id] as ScPlayer).place_at(deck.centre + Vector3.UP * 1.2, 0.0)
 
 
+## Where chopper [param index] is parked on [param on_layout], whose field [member platforms]
+## has to be built as: the middle of the platform the layout names for the first one
+## ([member ScLayouts.Layout.chopper_cell]), and the arena's ordinary pads for the rest.
+func chopper_pad_on(on_layout: ScLayouts.Layout, index: int) -> Vector3:
+	if on_layout != null and index == 0 and on_layout.chopper_cell.x >= 0:
+		for i in range(platforms.count()):
+			var deck := platforms.deck_at(i)
+
+			if not deck.is_bridge and deck.column == on_layout.chopper_cell.x \
+					and deck.row == on_layout.chopper_cell.y:
+				return Vector3(deck.centre.x, config.deck_height + config.chopper_pad_height,
+					deck.centre.z)
+
+	return arena.chopper_pad(index, config.chopper_count)
+
+
 func _place_choppers() -> void:
 	if not config.chopper_enabled or layout == null or not layout.with_chopper:
 		return
 
 	for index in range(config.chopper_count):
-		var at := arena.chopper_pad(index, config.chopper_count)
+		var at := chopper_pad_on(layout, index)
 		var copter := vehicles.spawn(ScContent.COPTER, at, ScContent.WORLD_OWNER)
 
 		if copter == null:

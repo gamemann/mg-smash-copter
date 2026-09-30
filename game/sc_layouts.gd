@@ -80,6 +80,13 @@ class Layout extends RefCounted:
 	## Whether a chopper is parked on this layout.
 	var with_chopper: bool = false
 
+	## The (column, row) the first chopper is parked in the middle of, or (-1, -1) for the
+	## ordinary pad off to one side ([code]ScArena.chopper_pad[/code]).
+	##
+	## [b]For a layout whose blurb puts the chopper somewhere.[/b] Server-side only: the
+	## machine is replicated where it comes to rest, so this never travels.
+	var chopper_cell := Vector2i(-1, -1)
+
 	## What the configured column spacing is multiplied by.
 	##
 	## Above one is a map of islands with jumps that have to be meant; below one is a map
@@ -187,6 +194,7 @@ class Layout extends RefCounted:
 			"gaps": Gaps.keys()[gaps],
 			"bridges": Bridges.keys()[bridges],
 			"chopper": with_chopper,
+			"chopper_cell": "%d,%d" % [chopper_cell.x, chopper_cell.y],
 			"pitch": "%.2f" % pitch_scale,
 			"row_pitch": "%.2f" % row_pitch_scale,
 			"row_shift": "%.2f" % row_shift,
@@ -312,6 +320,14 @@ static func all(config: ScConfig) -> Array[Layout]:
 	)
 	broadside.pitch_scale = 1.22
 	broadside.with_chopper = config.chopper_enabled
+	# [b]And the chopper is over the middle, which until 2026-09-30 it was not.[/b] It was
+	# parked on the ordinary pad, the Airfield's, a third of the way out along a 45 degree
+	# line — which on this field is (3,1), two jumps from where the second side starts and
+	# four jumps and a bridge from the first, so "somebody is going to take it" was always
+	# the same somebody. On the middle column's first-row platform it is at x = 0, on the
+	# pillar's axis where a lean moves it least, two jumps from the first side and a bridge
+	# and a jump from the second. `headless_run`'s Broadside section runs both there.
+	broadside.chopper_cell = Vector2i(config.columns / 2, 0)
 	# 3.4 m of air, which is what "pushed apart" means and is inside a running jump.
 	broadside.jumps = Jumps.ALONG_ROWS
 	out.append(broadside)
