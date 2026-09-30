@@ -391,7 +391,7 @@ func _build_showdown() -> void:
 	add_child(_showdown)
 
 	var middle := showdown_centre()
-	var ring_radius := config.corner_size * 0.85
+	var ring_radius := ring_half()
 
 	# Where each catwalk leaves the ring, so the ring's kerb can stop there. See
 	# [method _build_kerb] for why it has to.
@@ -435,29 +435,9 @@ func _build_showdown() -> void:
 			openings
 		)
 
-		# The catwalk, from the pad's inner edge to the ring's rim. Solved from the two
-		# radii rather than placed by eye: a walkway that stops short of either end is a
-		# gap a player falls into on their first step, and one that overlaps is a seam a
-		# sliding body catches on.
-		var outward := Vector3(centre.x - middle.x, 0.0, centre.z - middle.z)
-
-		if outward.length() < 0.001:
-			continue
-
-		outward = outward.normalized()
-
-		var start := config.corner_distance - config.corner_size * 0.5
-		var length := maxf(start - ring_radius, 0.5)
-		var at := middle + outward * (ring_radius + length * 0.5)
-
-		var walk := _pad(
-			"Catwalk%d" % index,
-			Vector3(at.x, middle.y, at.z),
-			Vector2(CATWALK_WIDTH, length),
-			ScTextures.Role.ARENA,
-			false
-		)
-		walk.rotation = Vector3(0.0, atan2(outward.x, outward.z), 0.0)
+		# The catwalk, from the pad's inner edge to the ring's rim. See [method catwalk].
+		if inward.length() > 0.001:
+			_build_catwalk(index)
 
 	var cover := ring_cover()
 
@@ -465,6 +445,190 @@ func _build_showdown() -> void:
 		_cover_block("RingCover%d" % index, cover[index])
 
 	_build_flanks()
+
+
+## Half the width of the showdown ring, which is a square on the showdown's middle.
+func ring_half() -> float:
+	return config.corner_size * 0.85
+
+
+## Team [param index]'s catwalk from its pad to the ring, as a Dictionary: `out` (the
+## direction from the ring's middle to the pad, on XZ), `across` (square to it, to the
+## right), `yaw`, and for each LONG side — `w` is -half and +half a width across — where that
+## side leaves the ring's edge (`from`) and meets the pad's (`to`), in metres from the
+## ring's middle along `out`. `corners` is the slab's top, on the surface, in the order
+## (-w, from), (+w, from), (+w, to), (-w, to).
+##
+## [b]Ends on both edges, cut along them, until 2026-09-29 a box that did not.[/b] The slab
+## was a rectangle from `ring_half()` to the pad's `corner_size / 2`, measured along its
+## middle as if every catwalk met its edges square on. With two or four sides they do. With
+## three, five or six a catwalk leaves the square ring at an angle, so the ring's edge is
+## farther out than that along the catwalk's middle and farther still along one side: at the
+## default sizes with three sides the slab ran 3.2 m on into the ring along one side and 1.3
+## along the other, coplanar with it, and carried its two long kerbs in with it — stubs
+## standing on the ring's floor past the ring's own kerb line. The pad's end did the same
+## thing on the pad. The ends are cut along each edge now, so the slab touches the ring and
+## the pad and overlaps neither; a rectangle stopped short of the edge instead would have
+## left a wedge of air at the join, which is the one thing a catwalk may not have.
+func catwalk(index: int) -> Dictionary:
+	var count := config.team_count
+	var middle := showdown_centre()
+	var corner := corner_point(index, count)
+	var out := Vector2(corner.x - middle.x, corner.z - middle.z).normalized()
+	var across := Vector2(out.y, -out.x)
+	var reach := Vector2(corner.x - middle.x, corner.z - middle.z).length()
+	var half_width := CATWALK_WIDTH * 0.5
+	var ends: Array[Vector2] = []
+	var corners: Array[Vector3] = []
+
+	for w: float in [-half_width, half_width]:
+		var side := across * w
+		var from := ring_half() + 0.3
+		# The pad, from its own middle, the other way along the same line.
+		var to := reach - config.corner_size * 0.5
+		ends.append(Vector2(from, to))
+
+	for at: Vector2 in [
+		Vector2(-half_width, ends[0].x), Vector2(half_width, ends[1].x),
+		Vector2(half_width, ends[1].y), Vector2(-half_width, ends[0].y),
+	]:
+		var xz := out * at.y + across * at.x
+		corners.append(Vector3(middle.x + xz.x, middle.y, middle.z + xz.y))
+
+	return {
+		"out": out,
+		"across": across,
+		"yaw": atan2(out.x, out.y),
+		"ends": ends,
+		"corners": corners,
+	}
+
+
+## How far along [param d] from [param offset] a line leaves an axis-aligned square of
+## half-width [param half] on the origin. The line has to start inside it.
+static func _line_exit(half: float, d: Vector2, offset: Vector2) -> float:
+	var exit := INF
+
+	if absf(d.x) > 0.0001:
+		exit = minf(exit, (signf(d.x) * half - offset.x) / d.x)
+
+	if absf(d.y) > 0.0001:
+		exit = minf(exit, (signf(d.y) * half - offset.y) / d.y)
+
+	return exit
+
+
+## Builds team [param index]'s catwalk as described by [method catwalk]: a slab whose two
+## short ends lie along the ring's and the pad's edges, and a kerb on each long side that
+## stops where the band under it meets either edge.
+func _build_catwalk(index: int) -> void:
+	var walk := catwalk(index)
+	var ends: Array[Vector2] = walk["ends"]
+	var out: Vector2 = walk["out"]
+	var middle := showdown_centre()
+	var thickness := 0.7
+
+	# The body sits on the catwalk's middle line, half-way along, turned to face `out`: its
+	# local X is `across` and its local Z is `out`, which is what `yaw` gives a basis.
+	var mid := (ends[0].x + ends[1].x + ends[0].y + ends[1].y) * 0.25
+	var body := StaticBody3D.new()
+	body.name = "Catwalk%d" % index
+	body.position = Vector3(middle.x + out.x * mid, middle.y, middle.z + out.y * mid)
+	body.rotation = Vector3(0.0, float(walk["yaw"]), 0.0)
+
+	var half_width := CATWALK_WIDTH * 0.5
+	var top: Array[Vector3] = [
+		Vector3(-half_width, 0.0, ends[0].x - mid), Vector3(half_width, 0.0, ends[1].x - mid),
+		Vector3(half_width, 0.0, ends[1].y - mid), Vector3(-half_width, 0.0, ends[0].y - mid),
+	]
+	var points := PackedVector3Array()
+
+	for p in top:
+		points.append(p)
+
+	for p in top:
+		points.append(p + Vector3.DOWN * thickness)
+
+	var shape := ConvexPolygonShape3D.new()
+	shape.points = points
+
+	var collider := CollisionShape3D.new()
+	collider.name = "Collision"
+	collider.shape = shape
+	body.add_child(collider)
+
+	var mesh := MeshInstance3D.new()
+	mesh.name = "Mesh"
+	mesh.mesh = _prism_mesh(points)
+	mesh.material_override = ScTextures.surface(ScTextures.Role.ARENA)
+	body.add_child(mesh)
+
+	# The kerbs, one per long side. The band is PAD_BAND wide, and its outer and inner
+	# lines leave an oblique edge at different places, so each end is the later of the two.
+	var material := ScTextures.surface(ScTextures.Role.CANNON)
+	var inner := half_width - PAD_BAND
+	var corner := corner_point(index, config.team_count)
+	var reach := Vector2(corner.x - middle.x, corner.z - middle.z).length()
+
+	for side in range(2):
+		var toward := -1.0 if side == 0 else 1.0
+		var inside := (walk["across"] as Vector2) * (toward * inner)
+		var from := maxf(ends[side].x, _line_exit(ring_half(), out, inside))
+		var to := minf(ends[side].y, reach - _line_exit(config.corner_size * 0.5, -out, inside))
+		var span := Vector3(PAD_BAND, CORNER_LIP, to - from)
+		var place := Vector3(toward * (half_width - PAD_BAND * 0.5), 0.0, (from + to) * 0.5 - mid)
+		_kerb_piece(body, "%d_0" % (2 + side), span, place, material)
+
+	_classify(body, &"world")
+	_showdown.add_child(body)
+
+
+## A closed prism from its top four [param points] and then its bottom four, flat-shaded
+## and wound for Godot's front faces whichever way round the quad was given.
+static func _prism_mesh(points: PackedVector3Array) -> ArrayMesh:
+	var tool := SurfaceTool.new()
+	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var centre := Vector3.ZERO
+
+	for p in points:
+		centre += p
+
+	centre /= float(points.size())
+
+	var faces: Array[PackedInt32Array] = [
+		PackedInt32Array([0, 1, 2, 3]), PackedInt32Array([4, 5, 6, 7]),
+	]
+
+	for i in range(4):
+		var j := (i + 1) % 4
+		faces.append(PackedInt32Array([i, j, j + 4, i + 4]))
+
+	for face in faces:
+		var a := points[face[0]]
+		var b := points[face[1]]
+		var c := points[face[2]]
+		var d := points[face[3]]
+		var normal := (b - a).cross(c - a).normalized()
+
+		if normal.dot((a + c) * 0.5 - centre) < 0.0:
+			normal = -normal
+
+		for tri: Array in [[a, b, c], [a, c, d]]:
+			var p: Vector3 = tri[0]
+			var q: Vector3 = tri[1]
+			var r: Vector3 = tri[2]
+
+			# Godot draws a triangle's front when it is clockwise seen from outside.
+			if (q - p).cross(r - p).dot(normal) > 0.0:
+				var swap := q
+				q = r
+				r = swap
+
+			for v in [p, q, r]:
+				tool.set_normal(normal)
+				tool.add_vertex(v)
+
+	return tool.commit()
 
 
 ## The cover on the showdown ring: one block per team, on the line from the ring's middle
@@ -487,7 +651,7 @@ func _build_showdown() -> void:
 func ring_cover() -> Array[Transform3D]:
 	var out: Array[Transform3D] = []
 	var middle := showdown_centre()
-	var ring_radius := config.corner_size * 0.85
+	var ring_radius := ring_half()
 
 	for index in range(config.team_count):
 		var corner := corner_point(index, config.team_count)
@@ -753,26 +917,34 @@ func _build_kerb(
 			)
 			var place := edges[i] + (Vector3(0.0, 0.0, middle) if along_x else Vector3(middle, 0.0, 0.0))
 
-			var mesh := MeshInstance3D.new()
-			mesh.name = "Kerb%d_%d" % [i, p]
-			var box := BoxMesh.new()
-			box.size = span
-			mesh.mesh = box
-			# The pad's own surface is y = 0 on the body and the slab hangs below it, so the
-			# kerb sits on top with its own middle half a lip up. Measuring from the mesh's
-			# centre instead is what made the platforms' first rim invisible.
-			mesh.position = place + Vector3(0.0, CORNER_LIP * 0.5, 0.0)
-			mesh.material_override = material
-			body.add_child(mesh)
+			_kerb_piece(body, "%d_%d" % [i, p], span, place, material)
 
-			var shape := BoxShape3D.new()
-			shape.size = span
 
-			var collider := CollisionShape3D.new()
-			collider.name = "KerbHit%d_%d" % [i, p]
-			collider.shape = shape
-			collider.position = mesh.position
-			body.add_child(collider)
+## One piece of kerb on [param body]: a `Kerb<suffix>` mesh and a `KerbHit<suffix>` collider
+## of [param span], standing on the surface at [param place].
+func _kerb_piece(
+	body: StaticBody3D, suffix: String, span: Vector3, place: Vector3, material: Material
+) -> void:
+	var mesh := MeshInstance3D.new()
+	mesh.name = "Kerb%s" % suffix
+	var box := BoxMesh.new()
+	box.size = span
+	mesh.mesh = box
+	# The pad's own surface is y = 0 on the body and the slab hangs below it, so the
+	# kerb sits on top with its own middle half a lip up. Measuring from the mesh's
+	# centre instead is what made the platforms' first rim invisible.
+	mesh.position = place + Vector3(0.0, CORNER_LIP * 0.5, 0.0)
+	mesh.material_override = material
+	body.add_child(mesh)
+
+	var shape := BoxShape3D.new()
+	shape.size = span
+
+	var collider := CollisionShape3D.new()
+	collider.name = "KerbHit%s" % suffix
+	collider.shape = shape
+	collider.position = mesh.position
+	body.add_child(collider)
 
 
 ## What is left of one edge's kerb once every catwalk crossing it is cut out, as (from, to)

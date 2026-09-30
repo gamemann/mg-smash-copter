@@ -34,7 +34,7 @@ const ScSpectate := preload("../game/sc_spectate.gd")
 ## `set_physics_process(false)` goes on first and every section advances the world itself.
 
 ## Sections entered, against sections that ran to their last line.
-const SECTIONS := 30
+const SECTIONS := 31
 
 ## And the total this counter cannot be.
 ##
@@ -42,7 +42,7 @@ const SECTIONS := 30
 ## checks that already ran still print ok, the ones after it never happen, and the section
 ## counter is satisfied because the section announced itself on the way in. dot-settings
 ## reported "8 sections, 63 passed, 0 failed" and exited 0 with eight checks missing.
-const CHECKS := 227
+const CHECKS := 236
 
 const TICK_RATE := 64
 const TICK := 1.0 / float(TICK_RATE)
@@ -93,6 +93,7 @@ func _run() -> void:
 	await _test_reach()
 	await _test_the_throat()
 	await _test_the_showdown_walk()
+	await _test_catwalks_meet_their_edges()
 	await _test_the_ring_cover()
 	await _test_the_flanks()
 	await _test_the_zigzag()
@@ -1751,6 +1752,127 @@ func _test_the_showdown_walk() -> void:
 
 	await _dispose(closed)
 	_finished()
+
+
+## [b]A catwalk stops at the ring's edge and at its pad's, and at neither short of it.[/b]
+##
+## Until 2026-09-29 a catwalk was a rectangle measured along its middle as if it met both
+## edges square on, which with three sides ran it up to 3.2 m on into the ring, coplanar
+## with it, carrying its kerbs in as stubs on the ring's floor (`tools/shot.sh
+## --view=junction --sc-team-count=3`). Read off the BUILT colliders rather than off
+## `ScArena.catwalk()`, and the edges found by marching rather than by its arithmetic, so a
+## description that agreed with itself and not with the world would fail here. Two and four
+## sides meet every edge square on; three meets two of them at an angle.
+func _test_catwalks_meet_their_edges() -> void:
+	_section("a catwalk meets the ring and its pad, and runs into neither")
+
+	for sides: int in [2, 3, 4]:
+		var game := await _world(func(c: ScConfig) -> void:
+			c.team_count = sides
+			c.cannon_enabled = false
+			c.specials_enabled = false
+		)
+		await _physics_frame()
+
+		var middle := game.arena.showdown_centre()
+		var ring := game.arena.ring_half()
+		var pad_half := game.config.corner_size * 0.5
+		var space := game.arena.get_world_3d().direct_space_state
+		var in_ring := PackedStringArray()
+		var in_pad := PackedStringArray()
+		var air := PackedStringArray()
+
+		for index in range(sides):
+			var body := game.arena.get_node(NodePath("Showdown/Catwalk%d" % index)) as StaticBody3D
+			var corner := game.arena.corner_point(index, sides)
+			var inside := func(p: Vector3, centre: Vector3, half: float) -> bool:
+				return absf(p.x - centre.x) < half - 0.01 and absf(p.z - centre.z) < half - 0.01
+
+			# Every point of the slab's top, sampled, and every corner of every kerb.
+			var points: Array[Vector3] = []
+
+			for piece: Node in body.get_children():
+				var collider := piece as CollisionShape3D
+
+				if collider == null:
+					continue
+
+				var to_world := body.global_transform * collider.transform
+				var convex := collider.shape as ConvexPolygonShape3D
+				var box := collider.shape as BoxShape3D
+
+				if convex != null:
+					var top: Array[Vector3] = []
+
+					for i in range(4):
+						top.append(to_world * convex.points[i])
+
+					for u in range(11):
+						for v in range(41):
+							var a := top[0].lerp(top[1], u / 10.0)
+							var b := top[3].lerp(top[2], u / 10.0)
+							points.append(a.lerp(b, v / 40.0))
+				elif box != null:
+					var h := box.size * 0.5
+
+					for x: float in [-h.x, h.x]:
+						for z: float in [-h.z, h.z]:
+							points.append(to_world * Vector3(x, -h.y, z))
+
+			for p in points:
+				if inside.call(p, middle, ring):
+					in_ring.append("Catwalk%d at %.2f, %.2f" % [index, p.x - middle.x, p.z - middle.z])
+					break
+
+			for p in points:
+				if inside.call(p, corner, pad_half):
+					in_pad.append("Catwalk%d at %.2f, %.2f" % [index, p.x - corner.x, p.z - corner.z])
+					break
+
+			# Across the whole width, 5 cm past each edge the ground is this catwalk. The
+			# edges are found by walking out along the line in centimetres.
+			var out := Vector2(corner.x - middle.x, corner.z - middle.z).normalized()
+			var across := Vector2(out.y, -out.x)
+			var reach := Vector2(corner.x - middle.x, corner.z - middle.z).length()
+
+			for step in range(9):
+				var w := lerpf(-ScArena.CATWALK_WIDTH * 0.5 + 0.05, ScArena.CATWALK_WIDTH * 0.5 - 0.05, step / 8.0)
+				var s := 0.0
+
+				while inside.call(_on_line(middle, out, across, s, w), middle, ring + 0.01):
+					s += 0.01
+
+				var e := reach
+
+				while inside.call(_on_line(middle, out, across, e, w), corner, pad_half + 0.01):
+					e -= 0.01
+
+				for at: float in [s + 0.05, e - 0.05]:
+					var p := _on_line(middle, out, across, at, w)
+					var hit := space.intersect_ray(PhysicsRayQueryParameters3D.create(
+						p + Vector3.UP * 1.0, p + Vector3.DOWN * 1.0))
+
+					if hit.is_empty() or hit["collider"] != body:
+						air.append("Catwalk%d at %.1f m across, %.2f m out" % [index, w, at])
+						break
+
+		_check(in_ring.is_empty(),
+			"with %d sides, no catwalk or its kerb runs into the ring" % sides, ", ".join(in_ring))
+		_check(in_pad.is_empty(),
+			"with %d sides, nor into its own pad" % sides, ", ".join(in_pad))
+		_check(air.is_empty(),
+			"with %d sides, and every catwalk meets both edges with no air at the join" % sides,
+			", ".join(air))
+
+		await _dispose(game)
+
+	_finished()
+
+
+## The point [param s] metres along [param out] and [param w] across it from [param middle].
+func _on_line(middle: Vector3, out: Vector2, across: Vector2, s: float, w: float) -> Vector3:
+	var xz := out * s + across * w
+	return Vector3(middle.x + xz.x, middle.y, middle.z + xz.y)
 
 
 func _test_the_zigzag() -> void:

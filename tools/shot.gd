@@ -206,6 +206,17 @@ func _place_camera(game: ScGame, view: String) -> void:
 			var pad := game.arena.corner_point(0, game.config.team_count)
 			camera.global_position = pad + Vector3.UP * 1.7
 			camera.look_at(ring_middle + Vector3.UP * 0.6, Vector3.UP)
+		"junction":
+			# Above the LAST team's catwalk where it meets the ring, looking down at the join:
+			# with three sides that is an oblique one, where a slab that runs on into the ring
+			# shows as kerb stubs standing on the ring's floor.
+			var ring_middle := game.arena.showdown_centre()
+			var count := game.config.team_count
+			var pad := game.arena.corner_point(count - 1, count)
+			var out := Vector3(pad.x - ring_middle.x, 0.0, pad.z - ring_middle.z).normalized()
+			var join := ring_middle + out * game.arena.ring_half()
+			camera.global_position = join + out * 9.0 + Vector3.UP * 11.0
+			camera.look_at(join - out * 2.0, Vector3.UP)
 		"flank":
 			# From behind perch 0 and above it, at the ring: the perch in front, the two flank
 			# catwalks running off to the pads either side, and the ring's blocks side-on.
