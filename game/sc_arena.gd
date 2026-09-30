@@ -483,9 +483,9 @@ func catwalk(index: int) -> Dictionary:
 
 	for w: float in [-half_width, half_width]:
 		var side := across * w
-		var from := ring_half() + 0.3
+		var from := _line_exit(ring_half(), out, side)
 		# The pad, from its own middle, the other way along the same line.
-		var to := reach - config.corner_size * 0.5
+		var to := reach - _line_exit(config.corner_size * 0.5, -out, side)
 		ends.append(Vector2(from, to))
 
 	for at: Vector2 in [

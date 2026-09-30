@@ -62,7 +62,7 @@ assets/kenney/      eight CC0 models and two atlases
 assets/{blaster-kit,melee,arms}/  the weapon pack's own art, vendored
 textures/prototype/ six CC0 prototype textures, one per role
 scenes/             sc_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (227), dedicated (70), headless_net (197)
+examples/           headless_run (236), dedicated (70), headless_net (197)
 tools/              shot.gd/.tscn/.sh — render a frame and look at it; any --sc-* is config
                     net_shot.gd/.tscn — `shot.sh --view=walk`: a CONNECTED client running,
                     rendered and measured (key to motion, corrections, eye speed per frame)
@@ -136,6 +136,10 @@ Every other 3D game in this family uses it. A spawn point is a fixed place in th
 **What it is for, with two sides: from either perch the ring's blocks are side-on**, so somebody crouched behind one, hidden from the pad it faces, is in plain sight. With three the perch is 60 degrees off the block and it still covers; that is measured, not promised.
 
 `headless_run`'s "the flanks" section, with two sides and three: a perch per pair of pads and a catwalk to each (kerbed on four sides and two), the kerb open where every flank arrives at both ends (a ray at shin height from each pad's and perch's middle out past the edge), no flank near the ring, and a bot RUN from pad 0 through perch 0 to pad 1: 173.8 m of a 175.4 m route in 27.22 s against 27.40 at 6.40 m/s with two sides, 122.7 of 124.0 in 19.22 s with three, lowest point the 2 cm drop. Then the four lines from both perches to behind both blocks, clear. Armed three ways: the pads' flank openings uncut fails the kerb check (the RUN still passes, because dot-player-controller 2e6d930 throws a runner over a closed kerb, which is why the ray check exists); the slab 0.6 m down fails the drive and the pace (32.1 s, and stuck at the perch with three sides); the perches a quarter of the way round instead of half fails the ring clearance (23.7 m) and the sight lines (2 of 4). Rendered with `tools/shot.sh --view=flank` and `--view=showdown`.
+
+## A catwalk is cut along both edges (2026-09-30)
+
+**Until 2026-09-29 a catwalk was a rectangle measured along its middle**, as if it met the ring and its pad square on. With two or four sides it does; with three a catwalk leaves the square ring at an angle, and the slab ran up to 3.2 m on into the ring, coplanar with it, carrying its kerbs in as stubs on the ring's floor. `ScArena.catwalk(index)` is the description now: each long side ends where it leaves the ring's square (`_line_exit`) and where it meets the pad's, so the slab is a convex prism whose short ends lie along the two edges, and each kerb stops where the band under it meets either edge. `headless_run`'s "a catwalk meets the ring and its pad" reads the BUILT colliders with two, three and four sides: nothing inside the ring or the pad, and a ray 5 cm inside each edge lands on the catwalk right across its width. Armed by the first draft, which ended every side at `ring_half() + 0.3` (0.3 m of air on every side count, three sides still overlapping): 5 of 9 fail. Rendered with `tools/shot.sh --view=junction --sc-team-count=3`.
 
 ## Decision 6: the showdown is somewhere else
 
@@ -335,7 +339,7 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 30 sections, 227 checks
+godot --headless --path . res://examples/headless_run.tscn   # 31 sections, 236 checks
 godot --headless --path . res://examples/dedicated.tscn      # 10 sections, 70 checks
 godot --headless --path . res://examples/headless_net.tscn   # 20 sections, 197 checks
 tools/shot.sh --view=field
@@ -344,6 +348,7 @@ tools/shot.sh --view=copter
 tools/shot.sh --view=showdown
 tools/shot.sh --view=ring                           # the ring from a pad at eye height: its cover
 tools/shot.sh --view=flank                          # a perch on the flank, its two catwalks, the ring side-on
+tools/shot.sh --view=junction --sc-team-count=3     # an oblique catwalk meeting the ring, from above
 tools/shot.sh --view=jump --sc-layout-ids=checker   # the jump a layout means, from behind
 tools/shot.sh --view=bridge --sc-layout-ids=spine   # a bridge weighed down at one end, from beside it
 tools/shot.sh --view=field --sc-layout-ids=islands  # two islands of four, the tube in the hole between
