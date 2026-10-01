@@ -26,6 +26,7 @@ const ScLayouts := preload("../game/sc_layouts.gd")
 ## tools/shot.sh --view=lean      # a platform that has been leant on, from its own level
 ## tools/shot.sh --view=copter    # the chopper, close
 ## tools/shot.sh --view=showdown  # the corners the round is finished in
+## tools/shot.sh --view=dais      # the ring's dais, low, from where a catwalk meets the ring
 ## tools/shot.sh --view=jump      # the first jump the layout means, from behind the runner
 ## tools/shot.sh --view=bridge    # a bridge leant on at one end, from beside it
 ## tools/shot.sh --view=beacon    # an admin's beacon on a stand-in, from across the field
@@ -231,6 +232,13 @@ func _place_camera(game: ScGame, view: String) -> void:
 				0.0, game.config.corner_distance * 0.9, game.config.corner_distance * 1.5
 			)
 			camera.look_at(middle, Vector3.UP)
+		"dais":
+			# [b]Low, from about where a pad's catwalk reaches the ring[/b], because the
+			# question is whether the dais reads as a step a person jumps onto and as cover
+			# from that side, and from above a 0.9 m block is a square on the floor.
+			var middle := game.arena.showdown_centre()
+			camera.global_position = middle + Vector3(3.0, 2.4, 11.0)
+			camera.look_at(middle + Vector3.UP * 0.5, Vector3.UP)
 		_:
 			camera.global_position = Vector3(0.0, game.config.deck_height + 18.0, 42.0)
 			camera.look_at(Vector3(0.0, game.config.deck_height, 0.0), Vector3.UP)

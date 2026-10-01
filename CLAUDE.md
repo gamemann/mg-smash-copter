@@ -62,7 +62,7 @@ assets/kenney/      eight CC0 models and two atlases
 assets/{blaster-kit,melee,arms}/  the weapon pack's own art, vendored
 textures/prototype/ six CC0 prototype textures, one per role
 scenes/             sc_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (244), dedicated (70), headless_net (197)
+examples/           headless_run (249), dedicated (70), headless_net (197)
 tools/              shot.gd/.tscn/.sh — render a frame and look at it; any --sc-* is config
                     net_shot.gd/.tscn — `shot.sh --view=walk`: a CONNECTED client running,
                     rendered and measured (key to motion, corrections, eye speed per frame)
@@ -136,6 +136,14 @@ Every other 3D game in this family uses it. A spawn point is a fixed place in th
 **What it is for, with two sides: from either perch the ring's blocks are side-on**, so somebody crouched behind one, hidden from the pad it faces, is in plain sight. With three the perch is 60 degrees off the block and it still covers; that is measured, not promised.
 
 `headless_run`'s "the flanks" section, with two sides and three: a perch per pair of pads and a catwalk to each (kerbed on four sides and two), the kerb open where every flank arrives at both ends (a ray at shin height from each pad's and perch's middle out past the edge), no flank near the ring, and a bot RUN from pad 0 through perch 0 to pad 1: 173.8 m of a 175.4 m route in 27.22 s against 27.40 at 6.40 m/s with two sides, 122.7 of 124.0 in 19.22 s with three, lowest point the 2 cm drop. Then the four lines from both perches to behind both blocks, clear. Armed three ways: the pads' flank openings uncut fails the kerb check (the RUN still passes, because dot-player-controller 2e6d930 throws a runner over a closed kerb, which is why the ray check exists); the slab 0.6 m down fails the drive and the pace (32.1 s, and stuck at the perch with three sides); the perches a quarter of the way round instead of half fails the ring clearance (23.7 m) and the sight lines (2 of 4). Rendered with `tools/shot.sh --view=flank` and `--view=showdown`.
+
+## The dais: cover that turns (2026-10-01)
+
+**Every piece of cover on the ring faced one way.** A ring block covers a survivor from the pad it faces and nothing else, and the ring's middle, where every catwalk's line crosses, was open floor. `ScArena.dais()` is a 4 m square block 0.9 m high (`DAIS_SIZE`) on the ring's middle, in the ring cover's colour. Crouched against whichever side is away from a threat, a survivor is out of sight of that pad or perch: the line from a pad's eye to somebody crouched 0.4 m off its far side passes the near edge at 0.76 m, under the top. So it is the one place on the ring that can be held against whichever side is shooting, by moving round it.
+
+**And its top is the ring's high ground, which is the trade.** 0.9 m is one jump (the apex is 1.15) and never a step (0.45), so nobody drifts onto it. Standing on it, a survivor's eye is 2.5 m over the ring and over every block, in sight of every pad and every perch. At 4 m square the ring's floor still goes round it between the blocks.
+
+`headless_run`'s "the ring's dais" (two sides) checks that it is built, over a step and under a jump. It runs a bot from pad 0 down the catwalk, round its pad's block and onto the top with one jump: 62.1 m of a 61.5 m route in 9.92 s, top speed 6.94 against a run of 6.40. It checks that crouched against the far side a survivor is hidden from all four pads and perches (two of those lines are blocked by the dais itself; a pad's own block is on its line first), that standing there they are seen from all four, and that from the top every pad and perch is in sight. Armed by not building it, which is how the nightly run left it (`pass # ARM` where the build call goes): 4 of the 5 fail, every one but the view from the top. Rendered with `tools/shot.sh --view=dais`.
 
 ## A catwalk is cut along both edges (2026-09-30)
 
@@ -345,7 +353,7 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 32 sections, 244 checks
+godot --headless --path . res://examples/headless_run.tscn   # 33 sections, 249 checks
 godot --headless --path . res://examples/dedicated.tscn      # 10 sections, 70 checks
 godot --headless --path . res://examples/headless_net.tscn   # 20 sections, 197 checks
 tools/shot.sh --view=field
@@ -354,6 +362,7 @@ tools/shot.sh --view=copter
 tools/shot.sh --view=showdown
 tools/shot.sh --view=ring                           # the ring from a pad at eye height: its cover
 tools/shot.sh --view=flank                          # a perch on the flank, its two catwalks, the ring side-on
+tools/shot.sh --view=dais                           # the ring's dais, low, from where a catwalk meets the ring
 tools/shot.sh --view=junction --sc-team-count=3     # an oblique catwalk meeting the ring, from above
 tools/shot.sh --view=jump --sc-layout-ids=checker   # the jump a layout means, from behind
 tools/shot.sh --view=bridge --sc-layout-ids=spine   # a bridge weighed down at one end, from beside it

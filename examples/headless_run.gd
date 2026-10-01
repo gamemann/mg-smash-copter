@@ -34,7 +34,7 @@ const ScSpectate := preload("../game/sc_spectate.gd")
 ## `set_physics_process(false)` goes on first and every section advances the world itself.
 
 ## Sections entered, against sections that ran to their last line.
-const SECTIONS := 32
+const SECTIONS := 33
 
 ## And the total this counter cannot be.
 ##
@@ -42,7 +42,7 @@ const SECTIONS := 32
 ## checks that already ran still print ok, the ones after it never happen, and the section
 ## counter is satisfied because the section announced itself on the way in. dot-settings
 ## reported "8 sections, 63 passed, 0 failed" and exited 0 with eight checks missing.
-const CHECKS := 244
+const CHECKS := 249
 
 const TICK_RATE := 64
 const TICK := 1.0 / float(TICK_RATE)
@@ -96,6 +96,7 @@ func _run() -> void:
 	await _test_catwalks_meet_their_edges()
 	await _test_the_ring_cover()
 	await _test_the_flanks()
+	await _test_the_dais()
 	await _test_the_zigzag()
 	await _test_the_spine()
 	await _test_two_islands()
@@ -1654,6 +1655,176 @@ func _test_the_flanks() -> void:
 
 		await _dispose(game)
 
+	_finished()
+
+
+## The dais (2026-10-01): a 4 m block 0.9 m high on the ring's middle. Run to from a pad
+## and jumped onto, at a run; somebody crouched against its far side is hidden from any pad
+## or perch; and from its top every pad and every perch is in sight.
+## `tools/shot.sh --view=dais` is the render.
+func _test_the_dais() -> void:
+	_section("the ring's dais: one jump up, cover that turns, and the high ground")
+
+	var sides := 2
+	var game := await _world(func(c: ScConfig) -> void:
+		c.team_count = sides
+		c.cannon_enabled = false
+		c.specials_enabled = false
+	)
+	await _physics_frame()
+
+	var config := game.config
+	var middle := game.arena.showdown_centre()
+	var half := ScArena.DAIS_SIZE.x * 0.5
+	var top := middle.y + ScArena.DAIS_SIZE.y
+
+	_check(game.arena.has_node(^"Showdown/RingDais")
+			and absf(game.arena.dais().origin.y + ScArena.DAIS_SIZE.y * 0.5 - top) < 0.001
+			and ScArena.DAIS_SIZE.y > ScPlayer.tunables_for(config, null).step_height
+			and ScArena.DAIS_SIZE.y < config.jump_height,
+		"the dais stands on the ring's middle, over a step and under a jump",
+		"built %s, %.2f m against step %.2f and jump %.2f" % [
+			game.arena.has_node(^"Showdown/RingDais"), ScArena.DAIS_SIZE.y,
+			ScPlayer.tunables_for(config, null).step_height, config.jump_height])
+
+	# --- Driven: from pad 0 down its catwalk, across the ring, one jump onto the top. ---
+	var start := game.arena.corner_point(0, sides)
+	var yaw := game.arena.showdown_yaw(0, sides)
+	var runner := game.add_player(&"dais_runner", "Dais Runner", 1)
+	runner.place_at(start + Vector3.UP * 0.2, yaw)
+	await _step(game, 8)
+
+	# On the catwalk's line to 12 m out, round the pad's own block (it stands on that line
+	# 7.2 m out), then at the middle: the way a survivor runs it.
+	var out := Vector3(start.x - middle.x, 0.0, start.z - middle.z).normalized()
+	var across := Vector3(-out.z, 0.0, out.x)
+	var route_points: Array[Vector3] = [
+		middle + out * 12.0, middle + out * 4.5 + across * 3.0, middle,
+	]
+	var from := runner.controller.state.position
+	var route := 0.0
+	var last := from
+
+	for point in route_points:
+		route += Vector2(point.x - last.x, point.z - last.z).length()
+		last = point
+
+	route -= half
+
+	_track(runner)
+	var ticks := 0
+	var next := 0
+	var jumped := false
+	var on_top := false
+	var max_speed := ScPlayer.tunables_for(config, null).max_speed
+
+	for _i in range(int(14.0 * TICK_RATE)):
+		var at := runner.controller.state.position
+		var target := route_points[next]
+		var toward := Vector3(target.x - at.x, 0.0, target.z - at.z)
+
+		if next < route_points.size() - 1 and toward.length() < 1.0:
+			next += 1
+			target = route_points[next]
+			toward = Vector3(target.x - at.x, 0.0, target.z - at.z)
+
+		var command := DotFpsCommand.new()
+		command.yaw = rad_to_deg(atan2(-toward.x, -toward.z))
+		command.move = Vector2(0.0, 1.0)
+
+		# Off the ring 1.2 m short of the dais' edge, the lead a running jump wants.
+		if next == route_points.size() - 1 and not jumped and toward.length() < half + 1.2:
+			command.set_button(DotFpsCommand.BUTTON_JUMP, true)
+			jumped = true
+
+		runner.controller.apply_command(command)
+		game.simulate(TICK)
+		await _physics_frame()
+		ticks += 1
+
+		var now := runner.controller.state.position
+
+		if jumped and runner.controller.state.mode == DotFpsState.Mode.GROUND \
+				and now.y > top - 0.1 and absf(now.x - middle.x) < half \
+				and absf(now.z - middle.z) < half:
+			on_top = true
+			break
+
+	var covered := _covered
+	var fastest := _top_speed
+	_track(null)
+	var seconds := float(ticks) / float(TICK_RATE)
+	var ended := runner.controller.state.position
+	var pace := covered / seconds if seconds > 0.0 else 0.0
+
+	print("  ..    dais: pad 0 to the dais' top %.1f m (route %.1f) in %.2f s, %.2f m/s, top %.2f against run %.2f" % [
+		covered, route, seconds, pace, fastest, max_speed])
+
+	_check(on_top and runner.is_alive(),
+		"a runner goes from pad 0 down the catwalk and jumps onto the dais",
+		"ended at %.2f m over the ring, %.1f m from its middle" % [
+			ended.y - middle.y, Vector2(ended.x - middle.x, ended.z - middle.z).length()])
+	_check(on_top and fastest >= max_speed * 0.95 and seconds <= route / max_speed + 1.0,
+		"and at a run: the route in its running time",
+		"%.1f m in %.2f s (%.2f s at %.2f m/s), top %.2f" % [
+			route, seconds, route / max_speed, max_speed, fastest])
+
+	# --- Cover that turns, and the high ground. -----------------------------------------
+	#
+	# From every pad and every perch: somebody crouched against the dais' far side is out
+	# of sight, and somebody standing there is not. A ring block covers from one pad; the
+	# dais covers from whichever one a survivor puts it between.
+	var space := game.arena.get_world_3d().direct_space_state
+	var hidden := 0
+	var under := 0
+	var over := 0
+	var lookers: Array[Vector3] = []
+
+	for index in range(sides):
+		lookers.append(game.arena.corner_point(index, sides))
+		lookers.append(game.arena.perch_point(index, sides))
+
+	for looker in lookers:
+		var eye := looker + Vector3.UP * 1.6
+		var away := Vector3(middle.x - looker.x, 0.0, middle.z - looker.z).normalized()
+		var behind := middle + away * (half + 0.4)
+		var crouched := Vector3(behind.x, middle.y + 0.7, behind.z)
+		var standing := Vector3(behind.x, middle.y + 1.6, behind.z)
+		var low := space.intersect_ray(PhysicsRayQueryParameters3D.create(eye, crouched))
+		var high := space.intersect_ray(PhysicsRayQueryParameters3D.create(eye, standing))
+
+		if not low.is_empty():
+			hidden += 1
+
+			if String((low["collider"] as Node).name) == "RingDais":
+				under += 1
+		if high.is_empty():
+			over += 1
+
+	print("  ..    dais: crouched against the far side, %d of %d lines blocked, %d by the dais itself (the perches'; a pad's own block is on its line first)" % [
+		hidden, lookers.size(), under])
+
+	_check(hidden == lookers.size() and under >= sides and over == lookers.size(),
+		"and crouched against its far side a survivor is hidden from every pad and perch, standing is not",
+		"%d of %d hidden (%d by the dais), %d of %d seen standing" % [
+			hidden, lookers.size(), under, over, lookers.size()])
+
+	var dais_eye := Vector3(middle.x, top + 1.6, middle.z)
+	var seen := 0
+	var asked := 0
+
+	for index in range(sides):
+		for target: Vector3 in [game.arena.corner_point(index, sides), game.arena.perch_point(index, sides)]:
+			asked += 1
+
+			if space.intersect_ray(PhysicsRayQueryParameters3D.create(dais_eye, target + Vector3.UP * 1.6)).is_empty():
+				seen += 1
+
+	_check(seen == asked,
+		"and from its top every pad and every perch is in sight, over the blocks",
+		"%d of %d lines clear" % [seen, asked])
+
+	await _dispose(game)
 	_finished()
 
 

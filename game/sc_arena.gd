@@ -444,6 +444,8 @@ func _build_showdown() -> void:
 	for index in range(cover.size()):
 		_cover_block("RingCover%d" % index, cover[index])
 
+	_block("RingDais", dais(), DAIS_SIZE, ScTextures.Role.CANNON)
+
 	_build_flanks()
 
 
@@ -673,6 +675,30 @@ func ring_cover() -> Array[Transform3D]:
 ## it is shot at over it, a person crouched is not.
 const RING_COVER_SIZE := Vector3(2.4, 1.1, 0.6)
 
+
+# --- The dais (2026-10-01) ------------------------------------------------------
+
+## The block in the ring's middle: 4 m square, 0.9 m high.
+##
+## [b]Added because every piece of cover on the ring faced ONE way.[/b] A ring block
+## covers a survivor from the pad it faces and nothing else, and the ring's middle — where
+## every catwalk's line crosses — was open floor. The dais is cover that turns: crouched
+## against whichever side is away from a threat, a survivor is out of sight of that pad or
+## perch (the line from a pad's eye to somebody crouched 0.4 m off its far side passes the
+## near edge at 0.76 m, under its 0.9 m top), so it is the one place on the ring that can be
+## held against whichever side is shooting, by moving round it.
+##
+## [b]And its top is the ring's high ground, which is the trade.[/b] 0.9 m is one jump
+## (the apex is 1.15) and never a step (0.45), so nobody drifts onto it; standing on it a
+## survivor's eye is 2.5 m over the ring, over every block, and in sight of every pad and
+## every perch. 4 m square, so the ring's floor still goes round it between the blocks.
+const DAIS_SIZE := Vector3(4.0, 0.9, 4.0)
+
+
+## Where the dais stands: on the ring's middle, its base on the ring's surface.
+func dais() -> Transform3D:
+	return Transform3D(Basis.IDENTITY, showdown_centre() + Vector3.UP * DAIS_SIZE.y * 0.5)
+
 ## How far out from the ring's middle the cover stands, as a fraction of its half-width.
 const RING_COVER_OUT := 0.5
 
@@ -792,12 +818,17 @@ func _build_flanks() -> void:
 
 
 func _cover_block(node_name: String, at: Transform3D) -> void:
+	_block(node_name, at, RING_COVER_SIZE, ScTextures.Role.CANNON)
+
+
+## One solid box in the showdown, collider and mesh from the same size.
+func _block(node_name: String, at: Transform3D, size: Vector3, role: ScTextures.Role) -> void:
 	var body := StaticBody3D.new()
 	body.name = node_name
 	body.transform = at
 
 	var shape := BoxShape3D.new()
-	shape.size = RING_COVER_SIZE
+	shape.size = size
 
 	var collider := CollisionShape3D.new()
 	collider.name = "Collision"
@@ -807,9 +838,9 @@ func _cover_block(node_name: String, at: Transform3D) -> void:
 	var mesh := MeshInstance3D.new()
 	mesh.name = "Mesh"
 	var box := BoxMesh.new()
-	box.size = RING_COVER_SIZE
+	box.size = size
 	mesh.mesh = box
-	mesh.material_override = ScTextures.surface(ScTextures.Role.CANNON)
+	mesh.material_override = ScTextures.surface(role)
 	body.add_child(mesh)
 
 	_classify(body, &"world")
