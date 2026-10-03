@@ -43,7 +43,7 @@ const SECTIONS := 34
 ## checks that already ran still print ok, the ones after it never happen, and the section
 ## counter is satisfied because the section announced itself on the way in. dot-settings
 ## reported "8 sections, 63 passed, 0 failed" and exited 0 with eight checks missing.
-const CHECKS := 249
+const CHECKS := 251
 
 const TICK_RATE := 64
 const TICK := 1.0 / float(TICK_RATE)
