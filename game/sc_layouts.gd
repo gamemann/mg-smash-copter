@@ -27,7 +27,8 @@ enum Gaps {
 	CHECKER,
 	## Only the outer two columns at each end. Two islands and a lot of air.
 	ENDS,
-	## Everything except the middle. The cannon has nothing close to aim at.
+	## Everything except the middle third of the columns: on five, the centre one. The
+	## cannon has nothing close to aim at.
 	HOLLOW,
 	## Every other column, which leaves a gap on each side of every platform.
 	COMBED,
@@ -151,10 +152,19 @@ class Layout extends RefCounted:
 			Gaps.ENDS:
 				return column < 2 or column >= config.columns - 2
 			Gaps.HOLLOW:
-				# The middle third, rounded so a five-column field loses its centre one.
-				var low := config.columns / 3
-				var high := config.columns - 1 - config.columns / 3
-				return column < low or column > high
+				# The middle third, rounded so a five-column field loses its centre one —
+				# which until 2026-10-03 this said and did not do: `column < columns / 3 or
+				# column > columns - 1 - columns / 3` keeps 0 and 4 of five, so the field was
+				# two strips of two. The count is kept to the field's own parity so the hole
+				# is centred on the tube, and at least one column is left at each end.
+				var lost := maxi(1, config.columns / 3)
+
+				if (config.columns - lost) % 2 == 1:
+					lost += 1
+
+				lost = mini(lost, maxi(config.columns - 2, 0))
+				var low := (config.columns - lost) / 2
+				return column < low or column >= low + lost
 			Gaps.COMBED:
 				return column % 2 == 0
 			_:
@@ -337,8 +347,17 @@ static func all(config: ScConfig) -> Array[Layout]:
 		"Nothing in the middle. The cannon has to reach for you and it will."
 	)
 	hollow.stiffness_scale = 0.88
-	# None: what is left is the two outer columns, joined by their bridges and nothing else.
-	hollow.jumps = 0
+	# [b]Two strips of two until 2026-10-03, under a rule whose comment said one column
+	# goes.[/b] It took three, so each side had a platform, a bridge and a platform, and
+	# nothing to do about a shot but walk across to the other one. With only the middle
+	# column gone each half is a U round the hole: the outer column's two platforms and the
+	# bridge between them, and an inner platform off each, a 0.9 m jump along the row and
+	# the nearest floor to the tube. The bridge is the half's only way between its rows,
+	# and it falls with either platform it rests on — so losing an outer platform strands
+	# the inner one beyond it. Between the halves is the missing column, 12.3 m of air no
+	# jump reaches, with the tube in the middle of it. `headless_run`'s Hollow section runs
+	# a side round its U and at the other one.
+	hollow.jumps = Jumps.ALONG_ROWS
 	out.append(hollow)
 
 	return out
