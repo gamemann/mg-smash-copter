@@ -8,6 +8,7 @@ const ScNetCommand := preload("net/sc_net_command.gd")
 const ScConfig := preload("sc_config.gd")
 const ScGame := preload("sc_game.gd")
 const ScHud := preload("sc_hud.gd")
+const ScPaths := preload("sc_paths.gd")
 const ScPlayer := preload("sc_player.gd")
 const ScSpecials := preload("sc_specials.gd")
 
@@ -100,6 +101,11 @@ var _slot: int = 0
 
 
 func _ready() -> void:
+	# [b]zee-dot-weapons' art is this game's copy of it, wherever this game is mounted.[/b]
+	# `ZeeWeaponArtTable` names `res://assets/…`, and in a delivered pack that is the one place
+	# the art is not: every gun and the arms would load invisible, one WARN each.
+	ZeeModelCache.set_asset_root(ScPaths.root())
+
 	var config := ScConfig.new()
 
 	# [b]`load_layered` on the CLIENT too.[/b] The family's `defaults < JSON < env < argv`
@@ -162,6 +168,11 @@ func _ready() -> void:
 
 
 # --- Offline ---------------------------------------------------------------
+
+func _exit_tree() -> void:
+	# A static outlives the game: the next one the shell loads must not look for its art here.
+	ZeeModelCache.set_asset_root("res://")
+
 
 func _start_offline() -> void:
 	# Enough stand-ins for a round to exist at all: two sides with somebody on each, or the

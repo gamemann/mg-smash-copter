@@ -11,6 +11,7 @@ const ScHud := preload("../game/sc_hud.gd")
 const ScLayouts := preload("../game/sc_layouts.gd")
 const ScPlatforms := preload("../game/sc_platforms.gd")
 const ScPaths := preload("../game/sc_paths.gd")
+const ScClient := preload("../game/sc_client.gd")
 const ScPlayer := preload("../game/sc_player.gd")
 const ScProgress := preload("../game/sc_progress.gd")
 const ScSpecials := preload("../game/sc_specials.gd")
@@ -34,7 +35,7 @@ const ScSpectate := preload("../game/sc_spectate.gd")
 ## `set_physics_process(false)` goes on first and every section advances the world itself.
 
 ## Sections entered, against sections that ran to their last line.
-const SECTIONS := 33
+const SECTIONS := 34
 
 ## And the total this counter cannot be.
 ##
@@ -75,6 +76,7 @@ func _run() -> void:
 
 	_test_config()
 	_test_delivery()
+	await _test_zee_art_root()
 	_test_layouts()
 	await _test_world_builds()
 	await _test_a_platform_leans()
@@ -2757,6 +2759,49 @@ func _test_delivery() -> void:
 		", ".join(bare)
 	)
 
+	_finished()
+
+
+func _test_zee_art_root() -> void:
+	_section("the client points zee's art at this game, and gives it back")
+
+	# zee-dot-weapons names its art `res://assets/…`, which in a delivered pack is the host's
+	# root and holds nothing: every gun and the arms load invisible. The client sets
+	# `ZeeModelCache`'s asset root to `ScPaths.root()` when it boots and puts `res://` back when
+	# it goes. Built in, both are `res://`, so the root is first set to somewhere else and the
+	# client has to move it. Armed: without the `_ready` line the first check fails, without
+	# `_exit_tree` the second.
+	const ELSEWHERE := "res://elsewhere/"
+	const ART := "res://assets/blaster-kit/blaster-a.glb"
+
+	ZeeModelCache.set_asset_root(ELSEWHERE)
+
+	var client: Node = ScClient.new()
+	client.force_offline = true
+	client.offline_bots = 0
+	client.config_file = "user://cfg/headless-none.json"
+	add_child(client)
+
+	for i in 3:
+		await get_tree().process_frame
+
+	_check(
+		ZeeModelCache.resolve(ART) == ScPaths.rebase(ART),
+		"a booted client resolves zee's art under this game's root",
+		ZeeModelCache.resolve(ART)
+	)
+
+	ZeeModelCache.set_asset_root(ELSEWHERE)
+	remove_child(client)
+	client.free()
+
+	_check(
+		ZeeModelCache.resolve(ART) == ART,
+		"a client leaving puts zee's art back at res://",
+		ZeeModelCache.resolve(ART)
+	)
+
+	ZeeModelCache.set_asset_root("res://")
 	_finished()
 
 
