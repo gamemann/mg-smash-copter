@@ -285,9 +285,6 @@ func record(player_id: StringName, stat: StringName, value: float = 1.0) -> void
 		})
 
 
-## Loads somebody's lifetime progress. A statement call, never assigned: the tracker's
-## `begin` is a coroutine, and this is the family's pattern for starting one from code that
-## is not — `await` inside, a bare call outside.
 ## The key a player's numbers are filed under. Asked of [member durable_key_fn] once, then
 ## remembered; see the class note.
 func _key(player_id: StringName) -> StringName:
@@ -307,6 +304,9 @@ func _key(player_id: StringName) -> StringName:
 	return key
 
 
+## Loads somebody's lifetime progress. A statement call, never assigned: the tracker's
+## `begin` is a coroutine, and this is the family's pattern for starting one from code that
+## is not — `await` inside, a bare call outside.
 func _begin(player_id: StringName) -> void:
 	var began: DotResult = await achievements.begin(String(player_id))
 
