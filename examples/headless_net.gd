@@ -6,6 +6,8 @@ const ScNetCommand := preload("../game/net/sc_net_command.gd")
 const ScPlatformNet := preload("../game/net/sc_platform_net.gd")
 
 const ScAudio := preload("../game/sc_audio.gd")
+const ScAvatars := preload("../game/sc_avatars.gd")
+const ScFigure := preload("../game/sc_figure.gd")
 const ScClient := preload("../game/sc_client.gd")
 const ScConfig := preload("../game/sc_config.gd")
 const ScContent := preload("../game/sc_content.gd")
@@ -41,8 +43,8 @@ const ScSpecials := preload("../game/sc_specials.gd")
 ## real client is a separate program with its own export. Make them disagree, and let HELLO
 ## and LAYOUT correct it.
 
-const SECTIONS := 20
-const CHECKS := 197
+const SECTIONS := 21
+const CHECKS := 206
 
 ## Who the client is, on both ends.
 const CLIENT_PEER := 7
@@ -51,6 +53,10 @@ const SESSION := 42
 ## Somebody else, on their own peer. See `_test_somebody_else_is_drawn`.
 const OTHER_PEER := 8
 const OTHER_SESSION := 43
+
+## A third person, seated with a face of their own. See `_test_who_somebody_is_crosses`.
+const FACE_PEER := 9
+const FACE_SESSION := 44
 
 ## Frames the client draws between two ticks: a screen faster than the tick, as nearly every
 ## screen is. The interpolation fraction only matters between ticks.
@@ -124,6 +130,7 @@ func _run() -> void:
 		await _test_moving()
 		await _test_the_local_player_is_predicted()
 		await _test_somebody_else_is_drawn()
+		await _test_who_somebody_is_crosses()
 		await _test_the_phases()
 		await _test_a_weapon_crosses()
 		await _test_a_special_is_announced()
@@ -227,6 +234,21 @@ func _test_the_wire() -> void:
 		bool(join["ok"]) and int(join["player_id"]) == SESSION and str(join["name"]) == "Ada"
 			and int(join["team"]) == 4,
 		"a join carries a name and a side"
+	)
+	var face := ScAvatars.stock_avatar(&"u1")
+	face.set_part(ScAvatars.SLOT_SKIN, &"skin_k")
+	var faced := ScEvents.read_join(_reader(ScEvents.write_join(SESSION, 5, "Ada", 4, face)))
+	_check(
+		bool(faced["ok"]) and faced["avatar"] is DotAvatar
+			and (faced["avatar"] as DotAvatar).digest() == face.digest()
+			and int(faced["team"]) == 4,
+		"and a face, after the side rather than in front of it"
+	)
+	var bare := ScEvents.write_join(SESSION, 5, "Ada", 4)
+	var plain := ScEvents.read_join(_reader(bare))
+	_check(
+		bool(plain["ok"]) and plain["avatar"] == null,
+		"and no face is the stock person, not a refused join"
 	)
 	_check(ScEvents.read_player(_reader(ScEvents.write_player(SESSION))) == SESSION,
 		"a leave carries who left")
@@ -1086,6 +1108,108 @@ func _test_the_local_player_is_predicted() -> void:
 ## step at the snapshot rate towards a body that did not exist. Every check here goes
 ## through `ScClient.present_frame`, the function the real client's `_process` calls, at
 ## FRAMES_PER_TICK frames a tick with the fraction a renderer would pass.
+## Who somebody is reaches every client: the face they were seated with, and a new name and
+## face when the server learns them — which is what dot-platform's admission, a wardrobe
+## change and an operator's rename all end in.
+##
+## [b]Asserted on the drawn figure, not on the field.[/b] A client that stored the avatar
+## and drew the hash anyway would pass every check about the document; the atlas the
+## figure was BUILT with is the thing a player sees.
+func _test_who_somebody_is_crosses() -> void:
+	_section("who somebody is crosses, and is what is drawn")
+
+	_check(
+		ScAvatars.SKINS.size() == ScFigure.ATLASES.size(),
+		"there is one skin per atlas, so a skin index is an atlas index",
+		"%d skins, %d atlases" % [ScAvatars.SKINS.size(), ScFigure.ATLASES.size()]
+	)
+
+	# What the module hands the bridge: the platform's answer. A fixed face here, chosen to
+	# be one this session's id does NOT hash to, or a figure built from the hash would pass.
+	var face_key := ScNetBridge.player_key(FACE_SESSION)
+	var chosen := (ScAvatars.stock_index(face_key) + 3) % ScAvatars.SKINS.size()
+	var face := ScAvatars.stock_avatar(face_key)
+	face.set_part(ScAvatars.SLOT_SKIN, ScAvatars.SKINS[chosen])
+	_server_bridge.avatar_fn = func(session_id: int) -> DotAvatar:
+		return face if session_id == FACE_SESSION else null
+
+	var seated := _server_bridge.add_player(FACE_PEER, FACE_SESSION, "Cyd")
+	_server_bridge.avatar_fn = Callable()
+	await _steps(6)
+
+	var theirs: ScPlayer = _client_game.players.get(face_key)
+	var mine: ScPlayer = _client_game.players.get(ScNetBridge.player_key(SESSION))
+
+	if not seated.ok or theirs == null or mine == null:
+		_check(false, "a player seated with a face reaches the client",
+			str(seated.error) if not seated.ok else "not on the client")
+		_finished()
+		return
+
+	var _shown := ScClient.present_frame(_client_net, _client_game, mine, true, 1.0 / 60.0, 0.0)
+	_check(
+		theirs.avatar != null and theirs.avatar.digest() == face.digest(),
+		"a player seated with a face arrives wearing it"
+	)
+	_check(
+		theirs.figure != null and theirs.figure.atlas == str(ScFigure.ATLASES[chosen]),
+		"and is drawn in it, not in the one their id hashes to",
+		theirs.figure.atlas.get_file() if theirs.figure != null else "no figure"
+	)
+
+	# Later: the profile arrives, or they change their face, or an operator renames them.
+	# The same person, because the section before this one has already let Bea go.
+	var other_key := face_key
+	var other: ScPlayer = theirs
+	# Neither the face they have nor the one their id hashes to.
+	var later := (chosen + 1) % ScAvatars.SKINS.size()
+	if later == ScAvatars.stock_index(other_key):
+		later = (later + 1) % ScAvatars.SKINS.size()
+	var changed := ScAvatars.stock_avatar(other_key)
+	changed.set_part(ScAvatars.SLOT_SKIN, ScAvatars.SKINS[later])
+
+	var told := _server_bridge.refresh_player(FACE_SESSION, "Beatrix", changed)
+	await _steps(4)
+	_shown = ScClient.present_frame(_client_net, _client_game, mine, true, 1.0 / 60.0, 0.0)
+
+	_check(
+		told and other != null and other.display_name == "Beatrix"
+			and _server_game.players.get(other_key).display_name == "Beatrix",
+		"a new name reaches the server's world and the client's",
+		other.display_name if other != null else "gone"
+	)
+	_check(
+		other != null and other.figure != null
+			and other.figure.atlas == str(ScFigure.ATLASES[later]),
+		"and a new face is drawn the frame after, without them rejoining",
+		other.figure.atlas.get_file() if other != null and other.figure != null else "-"
+	)
+
+	# A document for another game's schema is nobody this game can draw.
+	var foreign := DotAvatar.make(&"some_other_game")
+	foreign.set_part(ScAvatars.SLOT_SKIN, ScAvatars.SKINS[later])
+	_server_bridge.refresh_player(FACE_SESSION, "", foreign)
+	await _steps(4)
+	_shown = ScClient.present_frame(_client_net, _client_game, mine, true, 1.0 / 60.0, 0.0)
+
+	_check(
+		other != null and other.display_name == "Beatrix" and other.figure != null
+			and other.figure.atlas
+				== str(ScFigure.ATLASES[ScAvatars.stock_index(other_key)]),
+		"a face from another game's schema is the stock person, and the name is kept",
+		other.figure.atlas.get_file() if other != null and other.figure != null else "-"
+	)
+
+	_server_bridge.remove_peer(FACE_PEER)
+	await _steps(4)
+	_check(
+		not _client_game.players.has(face_key),
+		"and the third person leaves again, so the sections after count as before"
+	)
+
+	_finished()
+
+
 func _test_somebody_else_is_drawn() -> void:
 	_section("somebody else is drawn, where they are, every frame")
 

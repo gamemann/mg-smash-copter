@@ -47,6 +47,7 @@ game/
   sc_spectate.gd    where somebody who is out looks: dot-spectate, authoritative or a mirror
   sc_audio.gd       what the game makes a noise about: a dot-audio catalogue and its stand-ins
   sc_progress.gd    what a player keeps: dot-stats numbers and dot-achievements rules over them
+  sc_avatars.gd     what a player looks like, as a document: one slot, six skins, the stock hash
   sc_beacon.gd      an admin's beacon: a ring, a ripple, a column and a synthesised ping
   sc_client.gd      one local player, alone or against a server. First person and third
   sc_client_chat.gd the chat box and the microphone
@@ -62,7 +63,7 @@ assets/kenney/      eight CC0 models and two atlases
 assets/{blaster-kit,melee,arms}/  the weapon pack's own art, vendored
 textures/prototype/ six CC0 prototype textures, one per role
 scenes/             sc_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (258), dedicated (70), headless_net (197)
+examples/           headless_run (258), dedicated (79), headless_net (206)
 tools/              shot.gd/.tscn/.sh — render a frame and look at it; any --sc-* is config
                     net_shot.gd/.tscn — `shot.sh --view=walk`: a CONNECTED client running,
                     rendered and measured (key to motion, corrections, eye speed per frame)
@@ -330,7 +331,19 @@ Two things that live in `project.godot` do not travel with a delivered pack.
 - **Authoritative worlds only**: a server, and an offline client (where the world counts for the player at the keyboard and says what they earned in the chat box). A connected client's world decides nothing. On a server an unlock is a notice to that one peer.
 - **Memory by default** (`progress_directory`), which is dot-achievements' own default and its reason: a server that silently started writing a file per player is one nobody notices until the disk is full. **Reporting is off** (`report_progress`): it needs an integration credential this game does not configure.
 - **`dedicated` printed one WRN it had not printed before, and it was dot-stats'.** `WRN stats.report a reading names a stat that will not be reported stat=sc.deaths why=unpublished` is `DotStatsTracker.end()` queueing a leaver's delta into the reporter even with `report_to_backbone` off (`dot_stats_tracker.gd` `end` → `_checkpoint` → `reporter.queue`), and the reporter warning, once per stat, that an unpublished stat will not be sent — on a server that sends nothing. Publishing `sc.deaths` to silence it would be changing a decision to hide a log line; it is in dot-stats' queue instead. **Fixed in dot-stats on 2026-09-25** (with reporting off the tracker never touches the reporter), and `dedicated` prints no such line now.
-- **Keys are the world's player ids**, `u<session>` on a server, which dot-stats accepts and which can never carry an account id. With no identity layer a key does not outlive a connection, so lifetime progress is per connection until there is one — the day there is, the scoped key it resolves is what `record` should be handed.
+- **Keys are the player's scoped profile key when they have one** (2026-10-03), and `u<session>` when they do not — a guest, a stand-in, a server with no platform. `ScProgress.durable_key_fn` is asked once, when counting begins (lazily, on the first number, so nearly always after admission), and the key is fixed for the session; `_key` is the only place the world's id becomes a filing key, and `earned` maps back. Neither can carry an account id. `dedicated`'s "who somebody is" files a number for an admitted account and finds it under the scoped key; armed by not wiring the function.
+
+## Who somebody is: profiles, names and faces (2026-10-03)
+
+**There was no identity layer, and the module said so as a decision.** There is one now, and it is not this game's code: `_make_identity()` returns dot-platform's `DotPlatformIdentity` over `ScAvatars.schema()`, and dot-game builds it before the services and loads dot-platform's own module beside it. **Authentication is still not here** — whether a player is proven to be somebody is the host's `dot_auth_server`, the same for every game it runs. What this game gained is everything after: a scoped profile, the name on it, a face, and numbers that outlive a connection.
+
+- **A face is one slot.** Every Blocky Character is the same mesh, so the six people `ScFigure` can draw are six atlases — `ScAvatars.SKINS`, in `ScFigure.ATLASES` order, which `headless_net` holds them to. The side stays a torso tint and is the game's, not the player's. The schema loads nothing, so a dedicated server validates a document without the art.
+- **The stock person is the old hash, exactly.** `ScAvatars.stock_avatar(id)` is the choice `ScPlayer._atlas` made before there were documents, so a server with no platform draws everybody precisely as it did. dot-platform resolves a first-time player to the same function over their scoped key (dot-user-avatar's `default_avatar_fn`, added for this), so a person has one face on every visit; before that addition, every admitted player in arena and g2gfast was the schema's one default.
+- **The document travels in JOIN**, appended after the side, as JSON capped at 1 KB; empty or unparseable is the stock person, never a refused join. A client applies it to a player it already has, so **a JOIN is also "who this person is now"**: `ScNetBridge.refresh_player` is how the server says it.
+- **Admission finishes AFTER seating, and that is the case this is built for.** dot-server has no stage between authentication and content, so a player is seated with a guest's name and the stock face whenever the profile store is slower than the join. dot-platform now notifies `player_admitted` (added for this) and `player_renamed`; the module hooks those and `player_avatar_changed` into one `refresh_player`. **The platform is asked through its module's `player_for(session)`**, never the hub by a key made here: the hub keys players by scoped key, so `"u%d"` finds nobody and falls through to stock silently — game-g2gfast's fallback had exactly that lookup.
+- **A guest keeps the stock face.** dot-user keeps no profile for a guest by default, so with authentication off everybody is admitted with the name they gave and nothing stored. A signed-in player's name is the site's: `platform_name` on one is refused with the reason, and `dedicated` asserts the world keeps the name.
+
+`headless_net`'s "who somebody is crosses, and is what is drawn" seats a player with a chosen face, refreshes their name and face, and sends a document from another schema — asserted on the atlas the client's figure was BUILT with, not on the stored document; armed by dropping the avatar from `_join_body` and by not applying it in `_apply_join` (three checks each). `dedicated`'s "who somebody is" boots the real identity layer and platform module, seats a session, then admits it late as a guest and again as an account; armed by unhooking `player_admitted` (four checks). **Not rendered**: the face a document chooses is one of the six atlases every earlier render already showed.
 
 ## Things deliberately not here
 
@@ -362,8 +375,8 @@ find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read
     godot --headless --path . --check-only --script "res://${f#./}"
 done
 godot --headless --path . res://examples/headless_run.tscn   # 35 sections, 258 checks
-godot --headless --path . res://examples/dedicated.tscn      # 10 sections, 70 checks
-godot --headless --path . res://examples/headless_net.tscn   # 20 sections, 197 checks
+godot --headless --path . res://examples/dedicated.tscn      # 11 sections, 79 checks
+godot --headless --path . res://examples/headless_net.tscn   # 21 sections, 206 checks
 tools/shot.sh --view=field
 tools/shot.sh --view=lean
 tools/shot.sh --view=copter
@@ -406,5 +419,4 @@ In the order they are worth doing.
 
 1. **Connect a real client shell to a delivered server.** The pack is published, signed and mounted, and a server runs whole rounds out of it with a clean log — but every player in those rounds is a bot, so Godot's own RPC routing over a real socket is still the one layer nothing here has exercised. It is where five of mg-buses-from-hell's bugs came from.
 2. **A world model in a watcher's hands.** The weapon state replicates and `ZeeWeaponNet.apply` already takes a null model; what is missing is a hand mount on `ScFigure`, the Kenney body a client draws for everybody else.
-3. **An identity layer**, if this game ever wants profiles and avatars. dot-game reports the gap at boot and carries on, which is a server where everybody is a guest — and, since 2026-09-25, a server where achievement progress lasts one connection, because `ScProgress` keys by session.
-4. **A menu, and dot-settings with it.** See "Things deliberately not here": the refusal is about having no screen, not about the settings.
+3. **A menu, and dot-settings with it.** See "Things deliberately not here": the refusal is about having no screen, not about the settings.

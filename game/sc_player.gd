@@ -3,6 +3,7 @@ extends CharacterBody3D
 const ScBeacon := preload("sc_beacon.gd")
 const ScConfig := preload("sc_config.gd")
 const ScFigure := preload("sc_figure.gd")
+const ScAvatars := preload("sc_avatars.gd")
 const ScPlatforms := preload("sc_platforms.gd")
 const ScSpecials := preload("sc_specials.gd")
 
@@ -39,6 +40,14 @@ signal died(by: StringName)
 
 @export var player_id: StringName = &"local"
 @export var display_name: String = "Player"
+
+## What this player looks like, as a dot-user-avatar document; null is the stock person.
+##
+## Set on a server from the platform — see `sc_module._avatar_for` — and carried to every
+## client in JOIN, so a person who chose a face is that face on every screen. Null means
+## nobody resolved one, and [method _atlas] falls back to the same hash [ScAvatars] calls
+## stock, so a server with no identity layer draws everybody exactly as it always did.
+var avatar: DotAvatar = null
 
 ## Whether a command is sampled from the input devices each tick.
 ##
@@ -534,11 +543,14 @@ func present_body(own_view: bool, at: Vector3, team_colour: Color) -> bool:
 		figure.name = "Figure"
 		add_child(figure)
 
-	if figure.atlas == "" or not figure.team_colour.is_equal_approx(team_colour):
-		# Rebuilt on a side change, which a moderator's `team` does between rounds.
+	var atlas := _atlas()
+
+	if figure.atlas != atlas or not figure.team_colour.is_equal_approx(team_colour):
+		# Rebuilt on a side change, which a moderator's `team` does between rounds, and on
+		# a new face — which a profile arriving after the player was seated is.
 		var height := controller.tunables.stand_height \
 			if controller != null and controller.tunables != null else 1.8
-		figure.build(height, _atlas(), team_colour)
+		figure.build(height, atlas, team_colour)
 
 	figure.visible = shown
 
@@ -553,10 +565,17 @@ func present_body(own_view: bool, at: Vector3, team_colour: Color) -> bool:
 	return shown
 
 
-## Which atlas this player wears, from their id rather than a random draw, so every client
-## dresses the same person the same way.
+## Which atlas this player wears: their avatar's skin, or the one their id hashes to.
+##
+## From the id rather than a random draw, so every client dresses the same person the same
+## way; a document naming a skin this build lacks falls back to that rather than to a
+## guess. [ScAvatars.SKINS] is the atlas list's order, which `headless_run` holds it to.
 func _atlas() -> String:
-	var index := int(hash(String(player_id)) & 0x7fffffff) % ScFigure.ATLASES.size()
+	var index := ScAvatars.skin_index(avatar)
+
+	if index < 0 or index >= ScFigure.ATLASES.size():
+		index = ScAvatars.stock_index(player_id)
+
 	return str(ScFigure.ATLASES[index])
 
 
@@ -572,5 +591,6 @@ func describe() -> Dictionary:
 		"armed": weapons != null,
 		"blinded": blinded,
 		"beacon": beacon,
+		"avatar": avatar.digest() if avatar != null else "stock",
 		"figure": figure.describe() if figure != null else {},
 	}

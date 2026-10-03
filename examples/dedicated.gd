@@ -3,6 +3,8 @@ extends Node
 const ScConfig := preload("../game/sc_config.gd")
 const ScGame := preload("../game/sc_game.gd")
 const ScPlayer := preload("../game/sc_player.gd")
+const ScAvatars := preload("../game/sc_avatars.gd")
+const ScProgress := preload("../game/sc_progress.gd")
 
 ## Boots a real [DotServer], loads this game into it as a module, and runs the commands an
 ## operator would actually type.
@@ -20,8 +22,8 @@ const ScPlayer := preload("../game/sc_player.gd")
 ## still a dedicated server as far as its console, its cvars and its modules are concerned,
 ## and those are what this is about.
 
-const SECTIONS := 10
-const CHECKS := 70
+const SECTIONS := 11
+const CHECKS := 79
 
 ## Everything this run writes, and it is deleted on the way in and on the way out.
 ##
@@ -78,6 +80,7 @@ func _run() -> void:
 		await _test_a_round_runs()
 		await _test_the_stand_ins()
 		await _test_the_live_tools()
+		await _test_who_they_are()
 		await _test_it_unloads_cleanly()
 		_test_no_message_preloads_itself()
 
@@ -729,6 +732,126 @@ func _test_the_live_tools() -> void:
 	for _i in range(2):
 		await get_tree().process_frame
 	_check(_said(given, "handover"), "`give` says why weapons are not given here", " | ".join(given))
+
+	module.get("roster").call("remove", session)
+	var _released := server.release_session(session.peer_id)
+	net.send_fn = previous_send
+	_finished()
+
+
+## Profiles, names and faces on a real server: dot-platform's identity layer, its module, and
+## the three events this game redraws a player on.
+##
+## [b]Admitted AFTER they are seated, on purpose.[/b] That is the order a real join has
+## whenever the profile store is slower than the content download — dot-server has no stage
+## to hold a player in between — and it is the order in which a game that only read the
+## name and face at seating shows a guest for the whole session. The session is seated with
+## no identity, then given one and announced, exactly as dot-server announces it.
+func _test_who_they_are() -> void:
+	_section("who somebody is")
+
+	var module := _module()
+	var identity: Object = module.get("identity") if module != null else null
+
+	_check(identity is DotPlatformIdentity, "the module built dot-platform's identity layer")
+	_check(server.modules.has_module("platform"), "and dot-game loaded the platform module")
+	_check(
+		identity is DotPlatformIdentity and (identity as DotPlatformIdentity).avatars != null
+			and (identity as DotPlatformIdentity).avatars.schema.id == ScAvatars.SCHEMA_ID,
+		"validating avatars against this game's schema"
+	)
+
+	var net: DotNetManager = module.get("net")
+	var previous_send := net.send_fn
+	net.send_fn = func(_peer: int, _payload: PackedByteArray, _delivery: int) -> void:
+		pass
+
+	var session := DotClientSession.new()
+	session.peer_id = 7171
+	session.userid = 717
+	session.display_name = "guest-717"
+	var _adopted := server.adopt_session(session)
+	server.events.fire("client_spawn", {"userid": 717, "name": "guest-717"})
+
+	var player: ScPlayer = game.players.get(&"u717")
+	_check(
+		player != null and player.avatar != null
+			and player.avatar.digest() == ScAvatars.stock_avatar(&"u717").digest(),
+		"seated before the platform knows them, they wear the stock look for their seat"
+	)
+
+	# A guest first — a server with authentication off, where everybody is one. dot-user
+	# keeps no profile for a guest by default (a guest id is a random per-device string, and
+	# a file per device is a disk filling up), so they get the name they gave and keep the
+	# stock look.
+	session.identity = DotAuthIdentity.guest("device-717", "Maggie")
+	var platform := server.modules.get_module("platform")
+	platform.call("_on_client_state_changed", session)
+
+	var deadline := Time.get_ticks_msec() + 5000
+	while (player == null or player.display_name != "Maggie") \
+			and Time.get_ticks_msec() < deadline:
+		await get_tree().process_frame
+
+	_check(
+		player != null and player.display_name == "Maggie"
+			and player.avatar.digest() == ScAvatars.stock_avatar(&"u717").digest(),
+		"a guest, admitted late, is called what they asked and keeps the stock look",
+		player.display_name if player != null else "-"
+	)
+
+	# Then the same seat signed in, which is the case profiles exist for. Re-announced the way
+	# dot-server announces a state change: a guest admission stored no key, so it runs again.
+	session.identity = DotAuthIdentity.from_dict({
+		"uid": "backbone:acc-717", "provider": "backbone", "provider_id": "acc-717",
+		"display_name": "Margaret", "authenticated_at": int(Time.get_unix_time_from_system()),
+	})
+	platform.call("_on_client_state_changed", session)
+
+	deadline = Time.get_ticks_msec() + 5000
+	while (player == null or player.display_name != "Margaret") \
+			and Time.get_ticks_msec() < deadline:
+		await get_tree().process_frame
+
+	var admitted: Object = platform.call("player_for", session)
+	var key := str(admitted.call("key")) if admitted != null else ""
+	_check(
+		player != null and player.display_name == "Margaret",
+		"once admitted, the world calls them by their profile's name",
+		player.display_name if player != null else "-"
+	)
+	_check(
+		player != null and admitted != null and player.avatar == admitted.get("avatar")
+			and player.avatar.digest() == ScAvatars.stock_avatar(StringName(key)).digest(),
+		"and draws what the platform resolved: this game's stock look, for their scoped key",
+		key
+	)
+
+	# What they keep is filed under the key that outlives this connection, and is still
+	# found by the world's own id.
+	if game.progress != null:
+		game.progress.record(&"u717", ScProgress.DEATHS)
+	_check(
+		game.progress != null and key != ""
+			and game.progress.filed_under(&"u717") == StringName(key)
+			and game.progress.stats.has_player(StringName(key))
+			and game.progress.session_values(&"u717").get_value(ScProgress.DEATHS, 0.0) == 1.0,
+		"and what they keep is filed under that key, found again by their seat",
+		str(game.progress.filed_under(&"u717")) if game.progress != null else "no progress"
+	)
+
+	# An account's name is the site's, and dot-user refuses to change it here — so an
+	# operator's `platform_name` on a signed-in player is a refusal they can read, and the
+	# world keeps the name. The rename that IS allowed (a guest profile, on a server that
+	# keeps them) reaching the session is dot-platform's sandbox's to check.
+	var renamed := _run_command("platform_name 717 Grace")
+	for _i in range(10):
+		await get_tree().process_frame
+	_check(
+		player != null and player.display_name == "Margaret" and _said(renamed, "account"),
+		"renaming a signed-in player is refused with the reason, and the world keeps the name",
+		"%s | %s" % [player.display_name if player != null else "-", " | ".join(renamed)]
+	)
 
 	module.get("roster").call("remove", session)
 	var _released := server.release_session(session.peer_id)

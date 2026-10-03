@@ -7,6 +7,7 @@ const ScGame := preload("sc_game.gd")
 const ScLayouts := preload("sc_layouts.gd")
 const ScPlayer := preload("sc_player.gd")
 const ScSpecials := preload("sc_specials.gd")
+const ScAvatars := preload("sc_avatars.gd")
 
 ## This game, as a module a dedicated server loads.
 ##
@@ -119,12 +120,20 @@ func _make_services() -> Node:
 	return services
 
 
-## [b]No identity layer, and it is the honest state rather than an oversight.[/b] Profiles
-## and avatars are real in this family and this game has not written that layer;
-## [DotGameModule] logs its absence and carries on. A server where everybody is a guest is
-## a server: a client connects, plays a whole round, talks, is scored and can be gagged.
-func _wants_platform_module() -> bool:
-	return false
+## Profiles, avatars and admission: dot-platform's [DotPlatformIdentity] over this game's
+## one-slot schema. [DotGameModule] builds it before the services and loads dot-platform's
+## own module beside it.
+##
+## [b]Authentication is not here and was never this game's.[/b] Whether a player is proven
+## to be somebody is the host's `dot_auth_server`, the same for every game it runs; what
+## this layer does is everything after — a scoped profile, the name on it, and a face.
+## With authentication off everybody is a guest with a profile of their own, which is what
+## a LAN server is.
+func _make_identity() -> Node:
+	var identity_layer := DotPlatformIdentity.new()
+	identity_layer.avatar_schema = ScAvatars.schema()
+	identity_layer.stock_avatar_fn = ScAvatars.stock_avatar
+	return identity_layer
 
 
 func _game_load() -> DotResult:
@@ -140,6 +149,7 @@ func _game_load() -> DotResult:
 	add_command("sc_say", _cmd_say, "Say something to everybody, as the server")
 
 	_wire_chat()
+	_wire_identity()
 	_wire_armed(world)
 	_wire_progress(world)
 	_add_tunables(world)
@@ -158,6 +168,62 @@ func _game_load() -> DotResult:
 
 	log_info("the field is up", world.describe())
 	return DotResult.success(null)
+
+
+## Who somebody is reaches the world: a face as they are seated, and the real name and
+## face once dot-platform has them.
+##
+## [b]Three events and one path.[/b] Admission finishes AFTER a player is seated — dot-server
+## has no stage between authentication and content to hold them in — so the name and face
+## a player is seated with are a guest's whenever the profile store is slower than the
+## join; `player_admitted` is the moment the real ones exist. A wardrobe change and an
+## operator's `platform_name` are the same thing later. All three end in
+## [method ScNetBridge.refresh_player], a JOIN everybody already knows how to apply.
+func _wire_identity() -> void:
+	var link := bridge as ScNetBridge
+
+	if link == null:
+		return
+
+	link.avatar_fn = _avatar_for
+	hook_post("player_admitted", _on_profile)
+	hook_post("player_avatar_changed", _on_profile)
+	hook_post("player_renamed", _on_profile)
+
+
+## What a session looks like: what dot-platform resolved for them, or the stock person.
+##
+## [b]Through the platform module's `player_for`, and never the hub by a key made here.[/b]
+## The hub keys a player by their scoped profile key, which only admission knows; a lookup
+## by `u<session>` finds nobody, every time, and falls through to stock — which reads as
+## "this player has no avatar" rather than as a wrong key. Duck-typed, because a server
+## without dot-platform is a configuration.
+func _avatar_for(session_id: int) -> DotAvatar:
+	var session := server.session_by_userid(session_id) if server != null else null
+	var platform: Object = server.modules.get_module("platform") \
+		if server != null and server.modules != null else null
+
+	if session != null and platform != null and platform.has_method("player_for"):
+		var player: Variant = platform.call("player_for", session)
+
+		if player is Object and (player as Object).get("avatar") is DotAvatar:
+			return (player as Object).get("avatar") as DotAvatar
+
+	if identity != null and identity.has_method("avatar_for"):
+		return identity.call("avatar_for", String(ScNetBridge.player_key(session_id)))
+
+	return null
+
+
+func _on_profile(event: DotEvent) -> void:
+	var session_id := event.get_int("userid")
+	var session := server.session_by_userid(session_id) if server != null else null
+	var link := bridge as ScNetBridge
+
+	if session == null or link == null:
+		return
+
+	link.refresh_player(session_id, session.display_name, _avatar_for(session_id))
 
 
 ## The numbers an operator is actually going to want to change, as cvars.
@@ -380,6 +446,21 @@ func _wire_armed(world: ScGame) -> void:
 func _wire_progress(world: ScGame) -> void:
 	if bridge == null:
 		return
+
+	# What a player keeps is filed under their scoped profile key, so it outlives the
+	# connection; see [ScProgress]. Nothing for a stand-in or a guest, who keep their seat's.
+	if world.progress != null:
+		world.progress.durable_key_fn = func(id: StringName) -> String:
+			var session := server.session_by_userid(ScNetBridge.session_of(id)) \
+				if server != null else null
+			var platform: Object = server.modules.get_module("platform") \
+				if server != null and server.modules != null else null
+
+			if session == null or platform == null or not platform.has_method("player_for"):
+				return ""
+
+			var held: Variant = platform.call("player_for", session)
+			return str((held as Object).call("key")) if held is Object else ""
 
 	world.achievement_earned.connect(func(id: StringName, title: String, points: int) -> void:
 		var peer_id: int = bridge.call("peer_for_player", ScNetBridge.session_of(id))

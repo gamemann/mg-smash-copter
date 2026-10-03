@@ -26,11 +26,19 @@ const ScPlatforms := preload("sc_platforms.gd")
 ## connected client's world decides nothing, so it counts nothing; what a player is told is
 ## a notice from the server when they earn something.
 ##
-## [b]Keys are the world's player ids[/b] — `u<session>` on a server, which dot-stats accepts
-## and a site account id never is: its reporter refuses a `backbone:` key before it leaves
-## the process, and a key built from a session cannot carry one. This game has no identity
-## layer, so a key does not outlive a connection; the day one exists, the scoped key it
-## resolves is what [method begin] should be handed instead.
+## [b]A player's numbers are filed under their scoped profile key when they have one[/b] —
+## dot-user's per-server derivation, which outlives a connection and can never carry a site
+## account id (dot-stats' reporter refuses a `backbone:` key before it leaves the process,
+## and this one is not one). [member durable_key_fn] supplies it; without one, or for a
+## guest dot-user keeps no profile for, the key is the world's id, `u<session>`, and lasts a
+## connection. The world's ids stay the world's: only what is handed to dot-stats and
+## dot-achievements changes, through [method _key].
+##
+## [b]Fixed when counting begins, for the rest of the session.[/b] Counting begins on a
+## player's first number, which is nearly always after dot-platform has admitted them; one
+## who scored before their profile arrived keeps the session key until they reconnect,
+## because moving half a session's numbers to another key mid-flight would file the second
+## half against a total the first half never reached.
 
 const CHANNEL := "sc.progress"
 
@@ -79,6 +87,15 @@ var _round_kills: Dictionary = {}
 
 ## Whether this round reached the corners.
 var _reached_showdown: bool = false
+
+## `func(player_id: StringName) -> String`: the durable key to file this player under, or
+## "" for none. Set by the module from dot-platform; see the class note.
+var durable_key_fn: Callable = Callable()
+
+## World id -> the key their numbers are filed under, and back. Fixed at [method record]'s
+## first reading for them.
+var _keys: Dictionary = {}
+var _ids: Dictionary = {}
 
 
 # --- The documents -----------------------------------------------------------
@@ -252,11 +269,13 @@ func record(player_id: StringName, stat: StringName, value: float = 1.0) -> void
 	if body == null or body.is_bot:
 		return
 
-	if not stats.has_player(player_id):
-		stats.begin(player_id, body.display_name)
-		_begin(player_id)
+	var key := _key(player_id)
 
-	var filed := stats.record(player_id, stat, value)
+	if not stats.has_player(key):
+		stats.begin(key, body.display_name)
+		_begin(key)
+
+	var filed := stats.record(key, stat, value)
 
 	if not filed.ok:
 		# WARN: a number a player earned that nobody will ever see. It is a schema or a key
@@ -269,6 +288,25 @@ func record(player_id: StringName, stat: StringName, value: float = 1.0) -> void
 ## Loads somebody's lifetime progress. A statement call, never assigned: the tracker's
 ## `begin` is a coroutine, and this is the family's pattern for starting one from code that
 ## is not — `await` inside, a bare call outside.
+## The key a player's numbers are filed under. Asked of [member durable_key_fn] once, then
+## remembered; see the class note.
+func _key(player_id: StringName) -> StringName:
+	if _keys.has(player_id):
+		return _keys[player_id]
+
+	var key := player_id
+
+	if durable_key_fn.is_valid():
+		var durable := str(durable_key_fn.call(player_id))
+
+		if durable != "":
+			key = StringName(durable)
+
+	_keys[player_id] = key
+	_ids[key] = player_id
+	return key
+
+
 func _begin(player_id: StringName) -> void:
 	var began: DotResult = await achievements.begin(String(player_id))
 
@@ -294,16 +332,26 @@ func leave(player_id: StringName) -> void:
 	_in_round.erase(player_id)
 	_round_kills.erase(player_id)
 
-	if stats == null or not stats.has_player(player_id):
+	var key: StringName = _keys.get(player_id, player_id)
+	_keys.erase(player_id)
+	_ids.erase(key)
+
+	if stats == null or not stats.has_player(key):
 		return
 
-	var _values := stats.end(player_id)
-	link.forget(String(player_id))
-	_end(player_id)
+	var _values := stats.end(key)
+	link.forget(String(key))
+	_end(key)
 
 
 func session_values(player_id: StringName) -> DotStatsValues:
-	return stats.session_values(player_id) if stats != null else DotStatsValues.new()
+	return stats.session_values(_keys.get(player_id, player_id)) \
+		if stats != null else DotStatsValues.new()
+
+
+## The key [param player_id]'s numbers are filed under. For a console command and a suite.
+func filed_under(player_id: StringName) -> StringName:
+	return _keys.get(player_id, player_id)
 
 
 # --- What the world reports -------------------------------------------------
@@ -410,7 +458,9 @@ func _on_unlocked(player: String, achievement: DotAchievement) -> void:
 	DotLog.info(CHANNEL, "an achievement was unlocked", {
 		"player": player, "achievement": String(achievement.id), "points": achievement.points,
 	})
-	earned.emit(StringName(player), achievement.display_name, achievement.points)
+	# Back to the world's id: the world tells the player, and the world knows them by that.
+	earned.emit(_ids.get(StringName(player), StringName(player)),
+		achievement.display_name, achievement.points)
 
 
 func describe() -> Dictionary:
