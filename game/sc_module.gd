@@ -133,6 +133,7 @@ func _make_identity() -> Node:
 	var identity_layer := DotPlatformIdentity.new()
 	identity_layer.avatar_schema = ScAvatars.schema()
 	identity_layer.stock_avatar_fn = ScAvatars.stock_avatar
+	identity_layer.avatar_translate_fn = ScAvatars.from_site
 	return identity_layer
 
 
