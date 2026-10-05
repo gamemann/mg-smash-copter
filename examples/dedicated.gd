@@ -23,7 +23,7 @@ const ScProgress := preload("../game/sc_progress.gd")
 ## and those are what this is about.
 
 const SECTIONS := 11
-const CHECKS := 81
+const CHECKS := 82
 
 ## Everything this run writes, and it is deleted on the way in and on the way out.
 ##
@@ -477,7 +477,8 @@ func _test_a_round_runs() -> void:
 
 	if module == null:
 		for what in [
-			"the round starts", "it reaches the corners", "and the showdown",
+			"the round starts", "and the server lists its layout as the map, not the game",
+			"it reaches the corners", "and the showdown",
 			"the cannon threw something", "and the field took damage",
 			"and lag compensation keeps nothing for what the server let go",
 			"and a round of stand-ins counted nothing for anybody",
@@ -513,6 +514,11 @@ func _test_a_round_runs() -> void:
 			break
 
 	_check(game.round_number > 0, "the round starts", "%d" % game.round_number)
+	_check(
+		game.layout != null and server.games.reported_map() == String(game.layout.id),
+		"and the server lists its layout as the map, not the game",
+		server.games.reported_map()
+	)
 	_check(reached_handover, "it reaches the corners")
 	_check(reached_showdown, "and the showdown", ScGame.Phase.keys()[game.phase])
 	_check(threw > 0, "the cannon threw something", "%d props" % threw)

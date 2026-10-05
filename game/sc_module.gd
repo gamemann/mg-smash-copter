@@ -152,6 +152,7 @@ func _game_load() -> DotResult:
 	_wire_chat()
 	_wire_identity()
 	_wire_armed(world)
+	_wire_map(world)
 	_wire_progress(world)
 	_add_tunables(world)
 
@@ -423,6 +424,20 @@ func _wire_chat() -> void:
 
 	bridge.connect("say_requested", _on_say_requested)
 	services.connect("command_entered", _on_chat_command)
+
+
+## A round's layout is what a server listing prints as the map.
+##
+## The layout is this game's map: the field the round is played on, picked per round. Said
+## on every round rather than once, because dot-server forgets the map whenever a game
+## unloads and a layout changes between rounds.
+func _wire_map(world: ScGame) -> void:
+	if world.layout != null:
+		report_map(String(world.layout.id))
+
+	world.round_began.connect(func(_number: int, layout_id: StringName) -> void:
+		report_map(String(layout_id))
+	)
 
 
 ## And the one game event the bridge cannot see for itself.
