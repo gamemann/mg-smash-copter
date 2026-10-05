@@ -830,6 +830,14 @@ func _process(delta: float) -> void:
 	if _arm != null and is_instance_valid(_arm):
 		rig = _arm
 
+	# The camera's half of the weapon's recoil. Added here rather than by the weapon,
+	# because this line writes the angles from scratch every frame and would undo it; and
+	# only here, never to the command — the shot already went where the command pointed.
+	if weapons != null:
+		var punch := weapons.view_punch()
+		pitch += deg_to_rad(punch.x)
+		yaw += deg_to_rad(punch.y)
+
 	rig.rotation = Vector3(pitch, yaw, 0.0)
 
 	# [b]And the position from between the last two ticks, which the angles above never
