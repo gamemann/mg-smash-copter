@@ -13,163 +13,122 @@ This project, along with every asset it is built on, was built initially with **
 
 I intend on reviewing code, testing, and editing documentation regularly. If you're interested in helping out, please let me know!
 
-## A Platform, a Pillar and a Cannon
+## How it plays
+A round has two halves.
 
-Two to six teams stand on platforms balanced on single pillars, forty metres up, while a cannon in the middle throws things at them. Whoever is still up when the clock runs out is thrown into a corner of the sky with a weapon they did not choose, and the last team standing wins.
+**The first two minutes are about keeping your footing.** Two to six teams stand on platforms balanced on single pillars, forty metres up. Nobody can hurt anybody. A platform leans toward whoever is standing on it, and past sixteen degrees it comes off its pillar and takes everybody on it down to the floor. Meanwhile a cannon in the middle aims at the platforms that are still up and throws props at them, getting heavier as the round goes on:
 
-It is a first- and third-person multiplayer minigame built on the `dot-*` addon family: [dot-props](https://github.com/modcommunity/dot-props) for everything the cannon throws, [dot-vehicle](https://github.com/modcommunity/dot-vehicle) for the chopper, [dot-combat](https://github.com/modcommunity/dot-combat) for health and hit registration, [dot-match](https://github.com/modcommunity/dot-match) for the round and the sides, [dot-player-controller](https://github.com/modcommunity/dot-player-controller) for the movement, [dot-net](https://github.com/modcommunity/dot-net) for the replication, [dot-game](https://github.com/modcommunity/dot-game) for the server wiring, [dot-spectate](https://github.com/modcommunity/dot-spectate) for where you look once you are out, [dot-audio](https://github.com/modcommunity/dot-audio) for the noise, [dot-stats](https://github.com/modcommunity/dot-stats) and [dot-achievements](https://github.com/modcommunity/dot-achievements) for what you keep, and [zee-dot-weapons](https://github.com/gamemann/zee-dot-weapons) for the twenty-seven weapons the second half is fought with.
-
-## Running it
-
-```bash
-godot --path .                                                # play it, alone, against stand-ins
-godot --headless --path . res://examples/headless_run.tscn    # the simulation, 205 checks
-godot --headless --path . res://examples/dedicated.tscn       # as a real server, 69 checks
-godot --headless --path . res://examples/headless_net.tscn     # over the wire, 186 checks
-tools/shot.sh --view=field                                    # render a frame and look at it
-tools/shot.sh --view=jump --sc-layout-ids=checker             # the jump a layout means
-```
-
-The same client plays alone and plays online: with no server link in the registry it runs the world itself, and with one it predicts its own movement and draws everything else from what the server sends. There is no separate single-player build to keep in step.
-
-## A round is two games
-
-**The first two minutes are about footing.** Nobody can hurt anybody. Every platform is a 10.5 metre square balanced on a pillar 1.35 metres across, so it leans toward whatever is standing on it — and a platform past sixteen degrees comes off its pillar and takes everybody on it down forty metres to the floor.
-
-**The last ninety seconds are a fight.** The survivors are teleported to corner pads in the sky, handed weapons drawn at random from the pack, and given four seconds before anybody can shoot. The corners are joined to a ring in the middle by catwalks, so holding your pad is safe and winning is not.
-
-| Key | |
-| --- | --- |
-| **Shift** | walk. Running is the default and running is what tips a platform |
-| **Space / Ctrl** | jump and crouch — and, in the chopper, up and down |
-| **E** | get into, or out of, whatever is next to you |
-| **F5** | swap between first and third person |
-| **1–5** | weapon slots, in the showdown |
-| **Y / U / V** | say something, say it to your side, hold to talk |
-| **Left / right click, when out** | the next or previous person you may watch |
-| **F5, when out** | through their eyes, or behind them if the server allows it |
-
-## Shift is a brake
-
-This is the one control the map is built around, and it is the opposite of every other game in this family. Running is the default speed. A platform is destabilised in proportion to how hard the people on it are moving, so a running player leans it about three times as far as a standing one — which means the only way to cross a platform somebody is already standing on the far side of is to slow down. The key everybody already holds to go faster is the one that saves you.
-
-## What the cannon throws
-
-Eight props in four tiers, and the tier is the whole design. The tiers unlock over the round, so the opening is survivable and the last thirty seconds are not.
-
-| Tier | | What it does to a platform |
+| Tier | Props | What it does to a platform |
 | --- | --- | --- |
-| 1 | Crate, tyre, cone | Wobbles it. Survivable by standing still, which is what it teaches |
-| 2 | Barrel, boulder | Tips it. A barrel also goes off, and is the only thing in the first half that throws a player upward |
-| 3 | Container, slab | Takes a corner off it, and adds to the damage the next one lands on |
-| 4 | Monolith | Deletes it, with everybody on it, whatever its health |
+| 1 | Crate, tyre, cone | Wobbles it |
+| 2 | Barrel, boulder | Tips it. A barrel also explodes |
+| 3 | Container, slab | Knocks a corner off it |
+| 4 | Monolith | Destroys it, with everybody on it |
 
-The cannon **aims**. It picks a platform that is still standing, solves the arc that reaches it, and scatters the aim by a few metres — so every shot is a warning a player can read off the sky, and missing is still possible.
+**Shift is a brake, not a sprint.** Running is the default speed, and running is what tips a platform. A running player leans it about three times as far as a standing one, so the way to cross a platform somebody else is standing on is to slow down.
 
-## Special rounds
+**The last ninety seconds are a fight.** Everybody still standing is teleported to a corner pad in the sky with random weapons from [zee-dot-weapons](https://github.com/gamemann/zee-dot-weapons). Catwalks join the corners to a ring in the middle. The last team standing wins.
 
-A third of rounds start with one, and one can also arrive part way through a round that looked ordinary. Each is a set of multipliers over numbers the game already has, so a special that halves the gravity slows the props, softens the platforms and lengthens the jumps without one line of code mentioning any of the three.
+A third of rounds are **special rounds**, which change the rules for a while: `barrage`, `heavy`, `feather` (low gravity), `slick` (ice), `gale` (wind), `quake`, `jelly` (loose pillars), `downpour` and `rush`. Two can overlap.
 
-`barrage` · `heavy` · `feather` (low gravity) · `slick` (ice) · `gale` (wind) · `quake` · `jelly` (loose pins) · `downpour` · `rush`
+The field is re-rolled every round from eight **layouts**, from the full grid down to two islands: `full`, `checker`, `islands`, `spine`, `airfield`, `gauntlet`, `broadside` and `hollow`. Two of them park a **chopper**: the pilot flies it with the movement keys and drops crates on whatever is underneath, and the passenger can shoot.
 
-Two can overlap and they multiply, which is a legitimate and very funny thing to be in the middle of.
+When you fall, you are out until the next round and watch somebody on your own side who is still up.
 
-## When you are out
+## Controls
 
-Falling is final until the next round, and you are not left looking at the floor. For a moment the camera hangs over the drop you went down; then it goes behind the eyes of somebody on your own side who is still up, and follows them into the corners if they get there. Left and right click step through whoever else you may watch. When nobody on your side is left, you watch the field — or, in the showdown, the corners — from above.
+| Key | Action |
+| --- | --- |
+| **WASD** | Move. In the chopper: W/S tilt forward and back, A/D turn |
+| **Shift** | Walk (the brake) |
+| **Space** / **Ctrl** | Jump / crouch. In the chopper: up / down |
+| **E** | Get into or out of the chopper |
+| **Mouse 1** | Fire (in the showdown). In the chopper: drop a crate |
+| **1**-**5** | Weapon slots (in the showdown) |
+| **F5** | First or third person |
+| **Y** / **U** | Chat / chat to your side |
+| **V** | Push to talk |
 
-What you may watch is the server's decision, not your client's. By default it is your own side only, and through their eyes only, because a dead player with a camera on the other corner is a scout for their team on voice. `sc_spectate_camera 0` lets anybody watch anybody, from behind as well; `2` lets nobody watch anything.
+While you are out: **Mouse 1** / **Mouse 2** watch the next or previous player, and **F5** switches between their eyes and behind them (if the server allows it).
 
-## What it sounds like
-
-The cannon is a bang from the middle of the map, and it is the one warning of what is coming that works without looking up. A platform creaks when it is most of the way to coming off its pillar, a landing thumps, a collapse and a barrel boom, and in the showdown every weapon is heard from where it was fired. Your ears are wherever your camera is, so when you are out you hear what the person you are watching hears.
-
-**There are no audio files yet.** Every sound is a stand-in synthesised from a handful of numbers when the client starts, and the catalogue names the file each one should come from: drop `audio/cannon_fire.ogg` in and the cannon uses it, with no code change.
-
-## What you keep
-
-The server counts what this game is actually about — rounds you were still standing at the end of the clock, showdowns won, people put out in the corners, falls, platforms you tipped by standing in the wrong place, and things the cannon landed on your own platform that missed you — and a handful of achievements are rules over those numbers. You are told the moment you earn one. Stand-ins are never counted.
-
-The numbers are kept in memory unless the operator names a directory with `SC_PROGRESS_DIRECTORY`, and reported to the backbone only with `SC_REPORT_PROGRESS` and a credential for it. This game has no accounts yet, so for now what you keep lasts as long as your connection.
-
-## Layouts
-
-The field is re-rolled at the start of every round: eight arrangements of the same platforms, from the full grid down to two islands with nothing between them. Two of them park a chopper.
-
-`full` · `checker` · `islands` · `spine` · `airfield` · `gauntlet` · `broadside` · `hollow`
-
-A layout is a handful of numbers and a list of cells, so the whole map travels to a client in about thirty bytes and both ends build the identical field in the identical order. Each one also says which jumps it means — along the rows, or only the diagonals on the chequerboard, or none at all on the gauntlet — and the suite holds every gap on every layout to what a running player can actually clear. `SC_LAYOUT_IDS=checker` (or `--sc-layout-ids=checker`) runs one layout all evening.
-
-## The chopper
-
-Two seats. The pilot flies it with the keys they already walk with — jump climbs, crouch descends, A and D are the pedals, W and S are the cyclic — and the left trigger **drops a crate** on whatever is underneath. The passenger can shoot.
-
-It is not either of the two chassis dot-vehicle ships: a wheeled one needs wheels on the ground and a hovercraft refuses to thrust when there is nothing under it, which is exactly the state a helicopter spends its life in. `ScCopter` is a fourth kind, loaded through the addon's own extension point, and nothing in dot-vehicle knows what a helicopter is.
-
-## Configuring a server
-
-Every number is a cvar or an environment variable, layered `defaults < JSON < environment < command line` like everything else in this family. Two dozen of them are live and write through to the running world, because finding a server's numbers means moving one between rounds with people watching.
-
-```
-sc_survival_seconds 150     // longer first half
-sc_teams 4                  // four sides, four corners
-sc_stiffness 4.0            // wobblier platforms
-sc_motion_gain 3.0          // running matters more
-sc_cannon_interval 1.2      // a busier sky
-sc_cannon_max_tier 2        // nothing that deletes a platform outright
-sc_special_chance 60        // most rounds are strange
-sc_bot_spread 2             // sharper stand-ins
-sc_chopper 0                // no chopper on any layout
-sc_min_players 6            // keep six in the round with stand-ins
-sc_spectate_camera 0        // somebody out may watch anybody, not only their own side
-```
-
-A moderator has dot-moderation's live tools, with this game's meaning for each: `noclip`, `freeze`, `speed`, `gravity`, `god`, `buddha`, `hp`, `slay`, `slap`, `rename`, the teleports, and `blind <player> [on|off|seconds]` and `beacon <player> [on|off]`. A blind blacks out that player's own screen and nobody else's, tilt bar included; a beacon puts a pulsing ring, a column you can see from anywhere and a ping on one player for everybody. Both outlive a round, as god does. `respawn`, `give` and `strip` are refused, and `modtools` says why.
-
-`sc_status`, `sc_net`, `sc_layouts` and `sc_specials` say what the server is doing. An empty server fills itself with stand-ins, because a round needs two sides to exist at all and one person alone would otherwise watch a round start and end several times a second.
-
-## Playing it against a server
-
-It is a dedicated-server game, delivered the way every other game in this family is: published as a signed content pack and downloaded by the client shell on connect, so a new version needs no new client build.
+## Getting started
+You need [Godot 4.7](https://godotengine.org/download). The game is built from many Dot addons, each in its own repository, so the easiest way to get everything is [dot-bootstrap](https://github.com/modcommunity/dot-bootstrap). It clones every project and links the addons into each one:
 
 ```bash
-# in dot-server-deploy
-godot --headless --path ../mg-smash-copter --import
-./server pack smash --source games/mg-smash-copter
-./server --game smash
-# then connect the client shell to 127.0.0.1:6070
+git clone https://github.com/modcommunity/dot-bootstrap.git
+cd dot-bootstrap
+./bootstrap.sh
+cd projects/mg-smash-copter
+./game.sh
 ```
 
-That path is checked rather than described: `dot-server-deploy/examples/smash_client.tscn` publishes nothing and assumes nothing, but it mounts the pack on a real server, connects a real client over a real socket, and asserts that the module's script is the mounted copy, that the world builds its platforms under its own gravity, that a round starts and the cannon puts something in the air, and that the client rebuilds a field of its own. It is the only place any of that can be seen: the three suites above all run inside this project, where the files are at `res://` and the globals are registered, which is the one condition a delivered pack never has.
+On Windows, run `bootstrap.ps1` instead and open the project in Godot.
 
-### What replicates, and what does not
+`game.sh` does everything else:
 
-| | |
+| Command | What it does |
 | --- | --- |
-| A player's own movement | **Predicted**, and corrected. The only thing in the game that is |
-| Everybody else's movement | Replicated and interpolated |
-| **The platforms** | Four numbers each — two angles, a height and a state — decided entirely by the server. A platform is the FLOOR, and a floor that two machines disagreed about is a player falling through something their own machine says is holding them up |
-| Props and choppers | Server-authoritative, never predicted. Two rigid-body solvers diverge within a second |
-| The pilot | Not predicted either: while somebody is flying, their controller has no answer to predict |
-| How many platforms are left | An event twice a second. A client runs no platform model, so it cannot count them — and that number is the most important one on the HUD |
+| `./game.sh` | Play offline against bots |
+| `./game.sh online` | Start a local server and the browser client, and print the link to open |
+| `./game.sh online down` | Stop them |
+| `./game.sh server` | Start a local dedicated server only |
+| `./game.sh test` | Check every script and run every test suite |
+| `./game.sh shot` | Save a screenshot to `screenshots/`. `./game.sh shot --help` lists the views |
+| `./game.sh help` | All of the options |
 
-## The art
+`online` and `server` use [dot-server-deploy](https://github.com/modcommunity/dot-server-deploy), which bootstrap clones next to this one. Run its `./setup.sh` once first.
 
-Every surface is [Kenney's](https://kenney.nl) **Prototype Textures**, six files, one per role — the deck, the pillar, the cannon, the corners, the hazard and the pads. Everything the cannon throws is from the Survival and Car kits. The weapons are the pack's own. All of it is **CC0**, which asks for nothing and permits everything; each kit's licence ships beside the files it covers.
+## Running a server
+Settings are cvars (or environment variables like `SC_LAYOUT_IDS`). Set them in the server's config, on the command line, or live from the console. Most of them take effect straight away.
 
-The chopper is geometry, because there is no helicopter in any of the kits and a machine that looked like a van would have been worse.
+```
+sc_survival_seconds 120     // length of the first half
+sc_showdown_seconds 90      // length of the fight
+sc_teams 2                  // number of sides (up to six)
+sc_stiffness 7.0            // lower is wobblier
+sc_motion_gain 2.0          // how much more a running player tips a platform than a walking one
+sc_cannon_interval 1.9      // seconds between shots
+sc_cannon_max_tier 4        // 2 = nothing that destroys a platform outright
+sc_special_chance 34        // percent of rounds that are special
+sc_chopper 1                // 0 = no chopper on any layout
+sc_min_players 4            // fill the round with bots up to this
+sc_bot_spread 7             // bot aim error in degrees (lower is sharper)
+sc_spectate_camera 1        // 0 = anybody may watch anybody, 1 = own side only, 2 = nobody
+```
 
-The map itself is built in code. A grid of squares on pillars, a cylinder in the middle and a ring of pads in the sky is not something worth authoring in a scene file, and a map that is a description rather than a build is a map a client can be told about in one message.
+`--sc-layout-ids=checker` (or `SC_LAYOUT_IDS=checker`) plays one layout all evening. An empty server fills itself with bots, because a round needs two sides.
 
-## What does not work yet
+Console commands: `sc_status`, `sc_net`, `sc_layouts` and `sc_specials`.
 
-- **Nobody draws somebody else's gun.** The weapon state replicates — the slot, the reload, the switch and a use counter — but hanging a world model on a watcher's copy of a player needs a character with a hand mount, and this game draws players as capsules.
-- **Stand-ins fall off more than they shoot.** Two thirds of the deaths in a showdown played by stand-ins are falls. They are four lines of brain with an aim error, which is enough to make an empty server look alive and is not a bot worth fighting. `sc_bot_advance` and `sc_bot_spread` are the two knobs.
-- **No profiles and no avatars.** dot-game reports the missing identity layer and carries on, which is a server where everybody is a guest — which is also why achievements last only as long as a connection.
-- **No settings screen.** There is no menu at all, so there is nowhere to put a volume slider, a mouse sensitivity or a field of view, and none of the three can be changed yet. The notes say why that is not a settings document with no screen in front of it.
+### Admin commands
+These come from [dot-moderation](https://github.com/modcommunity/dot-moderation): `noclip`, `freeze`, `speed`, `gravity`, `god`, `buddha`, `hp`, `slay`, `slap`, `rename` and the teleports. `blind <player> [on|off|seconds]` blacks out that player's screen, and `beacon <player> [on|off]` puts a ring and a ping on them for everybody. `respawn`, `give` and `strip` are turned off, and `modtools` says why.
 
-## Licence
+### Stats and achievements
+The server counts rounds survived, showdowns won, people knocked out in the corners, falls, platforms you tipped, and props that landed on your platform and missed you. Achievements are built on those. They are kept in memory unless the server sets `SC_PROGRESS_DIRECTORY`, and only reported to the website with `SC_REPORT_PROGRESS` and a credential.
 
-MIT. See [LICENSE](LICENSE).
+## Testing
 
-The art is the exception, and it is a more permissive one: the prototype textures and every kit the cannon throws are [Kenney's](https://kenney.nl), released under CC0 1.0, which is public domain with no attribution required. Each kit's own licence text ships unchanged beside the files it covers.
+```bash
+./game.sh test                  # every script parses, then every suite runs
+./game.sh test headless_run     # one suite
+```
+
+| Suite | What it covers |
+| --- | --- |
+| `headless_run` | The game itself: platforms, the cannon, layouts, special rounds, the showdown and bots |
+| `headless_net` | A server and a client in one process, over the network code |
+| `dedicated` | A real server: boots, loads the game, runs its commands |
+
+[`CLAUDE.md`](CLAUDE.md) has the design decisions and the reasoning behind them.
+
+## Not done yet
+- Other players' guns aren't drawn in their hands yet (yours is).
+- Bots fall off more than they shoot.
+- There is no settings menu, so volume, mouse sensitivity and field of view can't be changed yet.
+- The sounds are generated stand-ins. Dropping a file such as `audio/cannon_fire.ogg` in replaces one.
+
+## Credits
+The surfaces are Kenney's Prototype Textures, and everything the cannon throws is from Kenney's Survival and Car kits ([kenney.nl](https://kenney.nl), CC0). The weapons are from [zee-dot-weapons](https://github.com/gamemann/zee-dot-weapons). Each kit's licence is next to its files. The chopper is plain geometry, because none of the kits has a helicopter.
+
+## License
+MIT. See [LICENSE](LICENSE). The Kenney art is CC0, which is public domain.
