@@ -6,7 +6,7 @@ Read the family-wide conventions in [`../../CLAUDE.md`](../../CLAUDE.md) first, 
 
 ## What this game is, versus the other six
 
-game-arena is a deathmatch, game-g2gfast is a timer server, game-playground is a sandbox, game-hungario is an eating game, game-simple-lobby is a lobby and mg-buses-from-hell is asymmetric. This is the first one whose **primary antagonist is the floor**, and everything below comes from that.
+game-arena is a deathmatch, game-g2gfast is a timer server, game-playground is a sandbox, game-hungario is an eating game and mg-buses-from-hell is asymmetric. This is the first one whose **primary antagonist is the floor**, and everything below comes from that.
 
 Nothing can hurt anybody for the first two thirds of a round. There is no weapon, no objective to capture and nobody to shoot. The entire first phase is a question about where to stand on something that leans toward you, and the only inputs a player has are where they are and how fast they are moving. Then the clock runs out and it becomes an ordinary team fight — between exactly the people who were good at the first half.
 
