@@ -44,7 +44,7 @@ const SECTIONS := 36
 ## checks that already ran still print ok, the ones after it never happen, and the section
 ## counter is satisfied because the section announced itself on the way in. dot-settings
 ## reported "8 sections, 63 passed, 0 failed" and exited 0 with eight checks missing.
-const CHECKS := 262
+const CHECKS := 264
 
 const TICK_RATE := 64
 const TICK := 1.0 / float(TICK_RATE)
@@ -2949,6 +2949,21 @@ func _test_zee_art_root() -> void:
 	escape.pressed = true
 	client.call("_unhandled_input", escape)
 	_check(settings != null and settings.is_open(), "and Escape opens them")
+	settings.close()
+
+	# The Tab board, held: the menu's, drawn from the local world offline.
+	var tab := InputEventKey.new()
+	tab.physical_keycode = KEY_TAB
+	tab.pressed = true
+	client.call("_unhandled_input", tab)
+	var board: DotMenuScoreboard = client.get("board")
+	_check(board != null and board.is_open() and board.rows().size() >= 1
+		and board.rows().any(func(r: Dictionary) -> bool: return bool(r.get("you", false))),
+		"Tab holds the scoreboard up, with this player on it and picked out",
+		str(board.rows()) if board != null else "no board")
+	tab.pressed = false
+	client.call("_unhandled_input", tab)
+	_check(board != null and not board.is_open() and not settings.is_open(), "and letting go puts it away")
 
 	ZeeModelCache.set_asset_root(ELSEWHERE)
 	remove_child(client)

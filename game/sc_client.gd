@@ -81,6 +81,12 @@ var net: DotNetManager = null
 var bridge: ScNetBridge = null
 var link: Node = null
 
+## The Tab board, the menu's. See [method _wire_board].
+var board: DotMenuScoreboard = null
+
+## When this client started, for an offline board's "time".
+var _started_msec: int = Time.get_ticks_msec()
+
 var _offline: bool = true
 var _sampler: DotFpsSampler = null
 
@@ -454,17 +460,108 @@ func _build_settings() -> void:
 	if audio != null:
 		settings.bind_audio(audio.manager)
 
-	if settings.stack != null:
+	if settings.menu != null:
 		# [b]Walking is off while the menu is up, as it is while typing.[/b] The sampler
 		# polls the keyboard, and a player dragging a volume slider with the arrow keys
 		# would otherwise walk off whatever they had stopped on.
-		settings.stack.menu_state_changed.connect(func(any_open: bool) -> void:
+		settings.menu_state_changed.connect(func(any_open: bool) -> void:
 			_suspend_input(any_open or (chat != null and chat.is_typing()))
-			# Back into the game on desktop. A browser needs the click that follows, which
-			# `_unhandled_input` already turns into a capture.
-			if not any_open and not DotPlatform.is_web():
+			# The menu takes Escape itself now, so the pointer is freed here rather than
+			# by the key. Back into the game on desktop on close; a browser needs the
+			# click that follows, which `_unhandled_input` already turns into a capture.
+			if any_open:
+				_release()
+			elif not DotPlatform.is_web():
 				_capture()
 		)
+		# Typing a line is the chat box's keyboard: Escape there closes the line, not
+		# opens the menu.
+		settings.menu.busy = func() -> bool: return chat != null and chat.is_typing()
+		_wire_board()
+
+
+## The Tab board: dot-menu's, with this game's columns.
+##
+## [b]Online it is the server's roster with this game's state merged in.[/b] Names, pings and
+## how long each player has been on come from dot-server, which is the only thing that knows
+## them for everybody; the side, whether somebody is still up there and how often the floor
+## has warped them are already replicated here, so they are joined in by id. The sides are
+## the board's teams, in their colours. Offline it is [method board_snapshot].
+func _wire_board() -> void:
+	if settings == null or settings.menu == null:
+		return
+	board = settings.menu.scoreboard
+	board.title_text = "Smash Copter"
+	board.columns = [
+		{"key": &"name", "title": "Player", "width": 3.0},
+		{"key": &"state", "title": "", "width": 1.2},
+		{"key": &"warps", "title": "Warps", "kind": DotMenuScoreboard.KIND_NUMBER},
+		{"key": &"seconds", "title": "Time", "kind": DotMenuScoreboard.KIND_DURATION},
+		{"key": &"ping", "title": "Ping", "kind": DotMenuScoreboard.KIND_PING},
+	]
+	board.sort_with = func(a: Dictionary, b: Dictionary) -> bool:
+		if bool(a.get("alive", false)) != bool(b.get("alive", false)):
+			return bool(a.get("alive", false))
+		return str(a.get("name", "")).naturalnocasecmp_to(str(b.get("name", ""))) < 0
+	board.decorate = _decorate_row
+	board.prepare = _prepare_board
+	if not _offline and link != null:
+		board.feed_from(link)
+	else:
+		board.source = board_snapshot
+
+
+func _show_board(on: bool) -> void:
+	if board == null:
+		return
+	if on:
+		board.open()
+	else:
+		board.close()
+
+
+func _decorate_row(row: Dictionary) -> void:
+	if game == null:
+		return
+	var id := ScNetBridge.player_key(int(row.get("id", 0)))
+	if not game.players.has(id):
+		id = StringName(str(row.get("id", "")))
+	var who: ScPlayer = game.players.get(id)
+	if who == null:
+		return
+	var up := who.is_alive()
+	row["alive"] = up
+	row["state"] = "up" if up else "out"
+	row["warps"] = who.warps
+	row["team"] = game.team_of(id)
+	if who == player:
+		row["you"] = true
+
+
+## The layout in the header, and the sides in play as the teams.
+func _prepare_board(snap: Dictionary) -> void:
+	if game == null:
+		return
+	if game.layout != null:
+		snap["header"] = {"Layout": game.layout.display_name}
+	var sides: Array = []
+	for index in range(game.config.team_count):
+		sides.append({"id": index + 1, "name": ScGame.TEAM_NAMES[index], "color": ScGame.TEAM_COLOURS[index]})
+	snap["teams"] = sides
+
+
+## The board offline: every player in the local world. Public so a suite can read it.
+func board_snapshot() -> Dictionary:
+	var players: Array = []
+	if game != null:
+		for id in game.players:
+			var who: ScPlayer = game.players[id]
+			players.append({"id": String(id), "name": who.display_name, "seconds": _seconds_here(), "ping": -1, "bot": who.is_bot})
+	return {"server": {"name": "Smash Copter", "game": "offline"}, "players": players}
+
+
+func _seconds_here() -> int:
+	return int((Time.get_ticks_msec() - _started_msec) / 1000)
 
 
 func _build_audio() -> void:
@@ -1107,6 +1204,11 @@ static func drawn_position(body: ScPlayer, remote: bool) -> Vector3:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	# The Tab board, held: shown while the key is down, like every scoreboard in the genre.
+	if event is InputEventKey and (event as InputEventKey).physical_keycode == KEY_TAB and not event.is_echo():
+		_show_board(event.is_pressed())
+		return
+
 	if event is InputEventMouseButton and event.pressed and not _captured:
 		# Handled BEFORE the player guard below, because somebody clicks while the world is
 		# still loading more often than not, and a click swallowed for want of a player is a
