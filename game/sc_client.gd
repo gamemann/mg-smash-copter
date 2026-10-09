@@ -1,6 +1,7 @@
 extends Node
 
 const ScAudio := preload("sc_audio.gd")
+const ScSettings := preload("sc_settings.gd")
 const ScClientChat := preload("sc_client_chat.gd")
 const ScNetBridge := preload("net/sc_net_bridge.gd")
 const ScNetCommand := preload("net/sc_net_command.gd")
@@ -63,6 +64,9 @@ var chat: ScClientChat = null
 
 ## What the game sounds like. See [ScAudio].
 var audio: ScAudio = null
+
+## The player's own settings and the screen Escape opens. See [ScSettings].
+var settings: ScSettings = null
 
 ## The weapons in this player's own hands, once the showdown has started.
 ##
@@ -143,6 +147,7 @@ func _ready() -> void:
 	_build_hud()
 	_build_chat()
 	_build_audio()
+	_build_settings()
 
 	if _offline:
 		_start_offline()
@@ -310,6 +315,12 @@ func _adopt(candidate: ScPlayer) -> void:
 	player = candidate
 	_build_camera()
 
+	if settings != null:
+		settings.bind_camera(camera)
+		# Offline the player samples for themselves, from their controller's own tunables.
+		if player.sampler != null:
+			settings.bind_look(player.sampler.tunables)
+
 	if hud != null:
 		hud.bind(game, player)
 
@@ -418,6 +429,43 @@ func _on_collapse(index: int, _why: StringName) -> void:
 
 
 # --- What it sounds like -----------------------------------------------------
+
+## The player's settings, applied to everything that reads them. See [ScSettings].
+##
+## After the audio and the sampler, because both are bound here and a binding applies at
+## once. The camera arrives with the player and is bound in [method _adopt].
+func _build_settings() -> void:
+	settings = ScSettings.new()
+	settings.name = "Settings"
+	add_child(settings)
+
+	var built: DotResult = settings.setup()
+
+	if not built.ok:
+		DotLog.warn(CHANNEL, "no settings; everything is at its default", {"why": built.error.message})
+		remove_child(settings)
+		settings.free()
+		settings = null
+		return
+
+	if _sampler != null:
+		settings.bind_look(_sampler.tunables)
+
+	if audio != null:
+		settings.bind_audio(audio.manager)
+
+	if settings.stack != null:
+		# [b]Walking is off while the menu is up, as it is while typing.[/b] The sampler
+		# polls the keyboard, and a player dragging a volume slider with the arrow keys
+		# would otherwise walk off whatever they had stopped on.
+		settings.stack.menu_state_changed.connect(func(any_open: bool) -> void:
+			_suspend_input(any_open or (chat != null and chat.is_typing()))
+			# Back into the game on desktop. A browser needs the click that follows, which
+			# `_unhandled_input` already turns into a capture.
+			if not any_open and not DotPlatform.is_web():
+				_capture()
+		)
+
 
 func _build_audio() -> void:
 	audio = ScAudio.new()
@@ -696,12 +744,18 @@ func _build_chat() -> void:
 	# is about to go — and, in this game, what stops a pilot flying with the letters of the
 	# word they are typing.
 	chat.typing_changed.connect(func(typing: bool) -> void:
-		if _sampler != null:
-			_sampler.suspended = typing
-
-		if player != null and player.sampler != null:
-			player.sampler.suspended = typing
+		_suspend_input(typing or (settings != null and settings.is_open()))
 	)
+
+
+## Walking off and on: typing, or the settings screen up. Both samplers, because offline the
+## player samples for themselves and connected the client does.
+func _suspend_input(suspended: bool) -> void:
+	if _sampler != null:
+		_sampler.suspended = suspended
+
+	if player != null and player.sampler != null:
+		player.sampler.suspended = suspended
 
 
 func _capture() -> void:
@@ -1065,6 +1119,11 @@ func _unhandled_input(event: InputEvent) -> void:
 		# refuses to re-enter for about a second, so a toggle bound to it does nothing every
 		# other press.
 		_release()
+		# And opens the settings, because a released pointer with nothing on screen to click
+		# was a key that did half a job. A second Escape never reaches here: dot-ui's stack
+		# sits deeper in the tree, sees it first, and closes the screen.
+		if settings != null:
+			settings.open()
 		return
 
 	if event is InputEventKey and (event as InputEventKey).pressed:

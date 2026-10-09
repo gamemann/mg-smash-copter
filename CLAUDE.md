@@ -51,6 +51,7 @@ game/
   sc_beacon.gd      an admin's beacon: a ring, a ripple, a column and a synthesised ping
   sc_client.gd      one local player, alone or against a server. First person and third
   sc_client_chat.gd the chat box and the microphone
+  sc_settings.gd    the player's settings and the screen Escape opens (buses' BfhSettings)
   sc_services.gd    chat, voice and moderation. Seventy lines over dot-game's base
   sc_server.gd      what a DotServer loads as its game scene
   sc_module.gd      what a DotServer loads as its module. A hundred and forty, over dot-game
@@ -63,7 +64,7 @@ assets/kenney/      eight CC0 models and two atlases
 assets/{blaster-kit,melee,arms}/  the weapon pack's own art, vendored
 textures/prototype/ six CC0 prototype textures, one per role
 scenes/             sc_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (258), dedicated (82), headless_net (208)
+examples/           headless_run (260), dedicated (82), headless_net (208)
 tools/              shot.gd/.tscn/.sh — render a frame and look at it; any --sc-* is config
                     net_shot.gd/.tscn — `shot.sh --view=walk`: a CONNECTED client running,
                     rendered and measured (key to motion, corrections, eye speed per frame)
@@ -347,7 +348,7 @@ Two things that live in `project.godot` do not travel with a delivered pack.
 
 ## Things deliberately not here
 
-- **dot-settings.** Every other game has a settings document with sensitivity, field of view and volume in it, and it is refused here for now because **this client has nowhere to put one**: there is no menu, no pause screen and no dot-ui screen of any kind — the HUD is four numbers and a bar. A settings document with no screen is a JSON file a player edits by hand, and this client already reads one (`user://cfg/smash-copter.json`, through `ScConfig.load_layered`); a second would be two files of player-editable numbers with different rules for which wins, and dot-settings' whole value — a bounded document a screen is generated from, with scopes a server may clamp — is the screen. The day a menu exists, the first three settings are the master volume (dot-audio's mixer is already there), the sensitivity (`DotFpsTunables.mouse_sensitivity`, which the sampler already reads) and the field of view, and `apply_all()` goes with them — because a value loaded from disk has not "changed", and a layer that only listens for changes applies nothing it loaded.
+- **dot-settings was here until 2026-10-08**, refused because the client had no screen to put one on. It has one now: `ScSettings` is mg-buses-from-hell's `BfhSettings` renamed — sensitivity (ACCOUNT, the family's 0.022 degrees per unit), field of view (SERVER_CLAMPED, default the 92 the camera always had) and three volumes on dot-audio's mixer, with `apply_all()` after load — and Escape opens dot-ui's `DotSettingsScreen` over the field, with walking suspended while it is up, as while typing. The config file (`user://cfg/smash-copter.json`) stays the server's rules; the settings document is the player's, in `user://smash_settings`. `headless_run`'s client section checks the sampler and camera read it and Escape opens it (armed: not built, both fail).
 
 ## The art, and the one thing to know about vendoring it
 
@@ -374,7 +375,7 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 35 sections, 258 checks
+godot --headless --path . res://examples/headless_run.tscn   # 35 sections, 260 checks
 godot --headless --path . res://examples/dedicated.tscn      # 11 sections, 82 checks
 godot --headless --path . res://examples/headless_net.tscn   # 21 sections, 208 checks
 tools/shot.sh --view=field
@@ -428,5 +429,4 @@ godot --headless --path ../mg-smash-copter --import   # form five: a pack cannot
 
 In the order they are worth doing.
 
-1. **A menu, and dot-settings with it.** See "Things deliberately not here": the refusal is about having no screen, not about the settings.
-2. **The view model's swing for melee.** A watched knife is held out like a pistol; the kit's `attack-melee-right` clip is there to play on a swing, and the counter already says which kind of use it was.
+1. **The view model's swing for melee.** A watched knife is held out like a pistol; the kit's `attack-melee-right` clip is there to play on a swing, and the counter already says which kind of use it was.

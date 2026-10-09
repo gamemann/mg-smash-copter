@@ -43,7 +43,7 @@ const SECTIONS := 35
 ## checks that already ran still print ok, the ones after it never happen, and the section
 ## counter is satisfied because the section announced itself on the way in. dot-settings
 ## reported "8 sections, 63 passed, 0 failed" and exited 0 with eight checks missing.
-const CHECKS := 258
+const CHECKS := 260
 
 const TICK_RATE := 64
 const TICK := 1.0 / float(TICK_RATE)
@@ -2930,6 +2930,23 @@ func _test_zee_art_root() -> void:
 		"a booted client resolves zee's art under this game's root",
 		ZeeModelCache.resolve(ART)
 	)
+
+	# And the settings: Escape used to let go of the mouse and offer nothing to click. The
+	# document is built, the sampler and the camera read it, and Escape opens the screen.
+	var settings: Variant = client.get("settings")
+	var camera: Camera3D = client.get("camera")
+	_check(
+		settings != null and bool(settings.describe().get("look_bound", 0)) \
+			and camera != null and bool(settings.describe().get("camera_bound", false)) \
+			and is_equal_approx(camera.fov, float(settings.settings.get_int(&"field_of_view", 0))),
+		"the client's settings are read by its sampler and its camera",
+		str(settings.describe()) if settings != null else "no settings"
+	)
+	var escape := InputEventAction.new()
+	escape.action = &"ui_cancel"
+	escape.pressed = true
+	client.call("_unhandled_input", escape)
+	_check(settings != null and settings.is_open(), "and Escape opens them")
 
 	ZeeModelCache.set_asset_root(ELSEWHERE)
 	remove_child(client)
