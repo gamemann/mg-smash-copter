@@ -63,7 +63,7 @@ assets/kenney/      eight CC0 models and two atlases
 assets/{blaster-kit,melee,arms}/  the weapon pack's own art, vendored
 textures/prototype/ six CC0 prototype textures, one per role
 scenes/             sc_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (258), dedicated (79), headless_net (206)
+examples/           headless_run (258), dedicated (82), headless_net (208)
 tools/              shot.gd/.tscn/.sh — render a frame and look at it; any --sc-* is config
                     net_shot.gd/.tscn — `shot.sh --view=walk`: a CONNECTED client running,
                     rendered and measured (key to motion, corrections, eye speed per frame)
@@ -375,12 +375,13 @@ find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read
     godot --headless --path . --check-only --script "res://${f#./}"
 done
 godot --headless --path . res://examples/headless_run.tscn   # 35 sections, 258 checks
-godot --headless --path . res://examples/dedicated.tscn      # 11 sections, 79 checks
-godot --headless --path . res://examples/headless_net.tscn   # 21 sections, 206 checks
+godot --headless --path . res://examples/dedicated.tscn      # 11 sections, 82 checks
+godot --headless --path . res://examples/headless_net.tscn   # 21 sections, 208 checks
 tools/shot.sh --view=field
 tools/shot.sh --view=lean
 tools/shot.sh --view=copter
 tools/shot.sh --view=showdown
+tools/shot.sh --view=armed --sc-survival-seconds=10 --seconds=12   # a stand-in's gun in their hand, close
 tools/shot.sh --view=ring                           # the ring from a pad at eye height: its cover
 tools/shot.sh --view=flank                          # a perch on the flank, its two catwalks, the ring side-on
 tools/shot.sh --view=dais                           # the ring's dais, low, from where a catwalk meets the ring
@@ -413,10 +414,19 @@ godot --headless --path ../mg-smash-copter --import   # form five: a pack cannot
 # then connect the client shell to 127.0.0.1:6070
 ```
 
+## A gun in somebody else's hand (2026-10-08)
+
+**Until 2026-10-08 a watcher saw nobody holding anything**: the weapon state replicated, `ZeeWeaponNet.apply` was handed a null model, and the showdown was a fight between people with empty hands whose shots came out of their chests. `ScFigure` has a hand now and a `ZeeWorldModel` on it.
+
+- **The hand is at the end of the kit's own right arm, as a child of it.** The Blocky Character is not skinned: `arm-right` is a node pivoting at the shoulder, and the kit's `holding-right` clip is that node turned -90 degrees about X and nothing else (measured off the clip). So the figure plays its walk or sprint and then holds the arm up itself (`HOLD_ARM`), which is why its `AnimationPlayer` is advanced by hand in `pose()` (`ANIMATION_CALLBACK_MODE_PROCESS_MANUAL`): left to the engine, the clip writes the arm after the hold in some frames and before it in others. Playing `holding-right` instead stops the legs. The hand is scaled back to metres, because the model is scaled to the player's hull and a gun drawn at two thirds of its size reads as a toy.
+- **What is in the hand comes from two things the wire already carries.** A player this process simulates (an offline stand-in, or yourself in third person) is read off their rig. A mirrored one has no rig on a client, so it is the slot the snapshot says is out, looked up among the weapons the server ANNOUNCED it dealt them: a slot alone names no weapon, because the pack puts several in each. The module now announces every weapon dealt (`ARMED`, one each, the selected one first), the bridge notes each on the player (`ScPlayer.dealt`, reset when a deal arrives for a new round), and the client's chat says "You were handed a …" once per weapon. **No wire change**: the event is the one that existed, sent more than once.
+- **The flash and the tracer are the hand's; the report stays the game's.** `ScAudio.on_weapon` already plays somebody else's shot by kind from the counter, so the world model is built with zee-dot-weapons' new `sounds` off — set by name, because a shell older than that property fails to parse a pack that names it.
+
+`headless_net`'s "a weapon crosses" now checks that the client's copy of an armed player, drawn as a watcher draws it, holds the server's current weapon at the end of `arm-right` (armed by looking up the wrong slot: it fails). Rendered with `tools/shot.sh --view=armed --sc-survival-seconds=10 --seconds=12`: three stand-ins in the corners, arms out, guns forward.
+
 ## Still to do
 
 In the order they are worth doing.
 
-1. **Connect a real client shell to a delivered server.** The pack is published, signed and mounted, and a server runs whole rounds out of it with a clean log — but every player in those rounds is a bot, so Godot's own RPC routing over a real socket is still the one layer nothing here has exercised. It is where five of mg-buses-from-hell's bugs came from.
-2. **A world model in a watcher's hands.** The weapon state replicates and `ZeeWeaponNet.apply` already takes a null model; what is missing is a hand mount on `ScFigure`, the Kenney body a client draws for everybody else.
-3. **A menu, and dot-settings with it.** See "Things deliberately not here": the refusal is about having no screen, not about the settings.
+1. **A menu, and dot-settings with it.** See "Things deliberately not here": the refusal is about having no screen, not about the settings.
+2. **The view model's swing for melee.** A watched knife is held out like a pistol; the kit's `attack-melee-right` clip is there to play on a swing, and the counter already says which kind of use it was.

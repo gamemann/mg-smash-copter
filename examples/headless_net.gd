@@ -44,7 +44,7 @@ const ScSpecials := preload("../game/sc_specials.gd")
 ## and LAYOUT correct it.
 
 const SECTIONS := 21
-const CHECKS := 206
+const CHECKS := 208
 
 ## Who the client is, on both ends.
 const CLIENT_PEER := 7
@@ -1494,6 +1494,8 @@ func _test_a_weapon_crosses() -> void:
 		for what in [
 			"the carrier is holding something on the server",
 			"and the client is told which slot",
+			"a watcher draws the weapon the server has in their hand",
+			"at the end of the figure's right arm",
 			"a use crosses as a counter",
 			"which a watcher reads as a number of uses",
 			"and the magazine is owner-only",
@@ -1514,6 +1516,8 @@ func _test_a_weapon_crosses() -> void:
 
 	if watcher == null:
 		_check(false, "and the client is told which slot")
+		_check(false, "a watcher draws the weapon the server has in their hand")
+		_check(false, "at the end of the figure's right arm")
 		_check(false, "a use crosses as a counter")
 		_check(false, "which a watcher reads as a number of uses")
 		_check(false, "and the magazine is owner-only")
@@ -1524,6 +1528,38 @@ func _test_a_weapon_crosses() -> void:
 		int(watcher.get(&"net_slot")) == theirs.weapons.arsenal.current_slot(),
 		"and the client is told which slot",
 		"%d vs %d" % [int(watcher.get(&"net_slot")), theirs.weapons.arsenal.current_slot()]
+	)
+
+	# [b]The gun in their hand, as somebody else draws it.[/b] Dealt the way the module
+	# announces a deal — every weapon, the selected one first — and drawn from the slot the
+	# snapshot carries, because a slot alone names no weapon. The client's copy of this player
+	# is drawn as a watcher would draw it (not its own first-person view).
+	var current := theirs.weapons.arsenal.current_def()
+	_server_bridge.announce_armed(theirs.player_id, current.id)
+	for slot in theirs.weapons.arsenal.slots():
+		var other_def := theirs.weapons.arsenal.slot_at(slot).def
+		if other_def.id != current.id:
+			_server_bridge.announce_armed(theirs.player_id, other_def.id)
+	_exchange()
+	await _steps(2)
+
+	var copy: ScPlayer = _client_game.players.get(ScNetBridge.player_key(SESSION))
+	var _shown := copy.present_body(false, copy.global_position, Color.WHITE)
+	var hand := copy.figure.attachment(&"right_hand") if copy.figure != null else null
+	_check(
+		copy.figure != null and copy.figure.holding == current.id and copy.figure.held != null
+			and copy.figure.held.equipped() == current.id,
+		"a watcher draws the weapon the server has in their hand",
+		"%s drawn, %s held, dealt %s" % [
+			String(copy.figure.holding) if copy.figure != null else "-", String(current.id),
+			str(copy.dealt)
+		]
+	)
+	_check(
+		hand != null and copy.figure.held.get_parent() == hand
+			and String(hand.get_parent().name) == "arm-right",
+		"at the end of the figure's right arm",
+		str(hand.get_parent().name) if hand != null else "no hand"
 	)
 
 	var uses: Array[int] = []

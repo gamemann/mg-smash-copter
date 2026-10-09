@@ -1432,6 +1432,12 @@ func _on_event(message: DotNetMessage) -> void:
 			var armed := ScEvents.read_armed(reader)
 
 			if bool(armed["ok"]):
+				# Noted on the player here rather than by whoever listens, so every client
+				# draws the gun in a watched player's hand: see `ScPlayer.dealt`.
+				var dealt_to: ScPlayer = game.players.get(player_key(int(armed["player_id"]))) \
+					if game != null else null
+				if dealt_to != null:
+					dealt_to.note_dealt(armed["weapon_id"], game.round_number)
 				armed_received.emit(int(armed["player_id"]), armed["weapon_id"])
 		ScEvents.Kind.CHAT:
 			var wire := ScEvents.read_chat(reader)

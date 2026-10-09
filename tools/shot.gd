@@ -226,6 +226,43 @@ func _place_camera(game: ScGame, view: String) -> void:
 			var away := Vector3(perch.x - ring_middle.x, 0.0, perch.z - ring_middle.z).normalized()
 			camera.global_position = perch + away * 14.0 + Vector3.UP * 9.0
 			camera.look_at(ring_middle + Vector3.UP * 0.6, Vector3.UP)
+		"armed":
+			# [b]Somebody else holding a gun, close[/b]: the clock wound to the showdown, a
+			# stand-in that was handed a weapon, and the camera a few metres in front of them
+			# and to their left, at chest height — where the question "is the gun in the hand,
+			# the right way round and the right size" has an answer.
+			# Shorten the survival half with `--sc-survival-seconds=10 --seconds=16` rather than
+			# winding the clock here: a wound clock skipped the handover's teleport and ended the
+			# round. Waited out until somebody is armed, for up to ten seconds.
+			var waited := 0.0
+			while waited < 10.0 and game.phase != ScGame.Phase.SHOWDOWN:
+				waited += get_process_delta_time()
+				await get_tree().process_frame
+			for _i in range(90):
+				await get_tree().process_frame
+			var carrier: Node3D = null
+			for key: StringName in game.players:
+				var body: Node3D = game.players[key]
+				if body != null and bool(body.get("is_bot")) and body.call("is_alive") \
+						and body.get("weapons") != null:
+					carrier = body
+					break
+			if carrier == null:
+				camera.global_position = game.arena.showdown_centre() + Vector3(0.0, 12.0, 18.0)
+				camera.look_at(game.arena.showdown_centre(), Vector3.UP)
+			else:
+				var figure: Node3D = carrier.get("figure")
+				var at: Vector3 = figure.global_position if figure != null else carrier.global_position
+				var facing: Vector3 = -(figure.global_basis.z if figure != null else carrier.global_basis.z)
+				facing.y = 0.0
+				facing = facing.normalized()
+				var left := facing.cross(Vector3.UP).normalized() * -1.0
+				camera.global_position = at + facing * 3.2 + left * 1.6 + Vector3.UP * 1.5
+				camera.look_at(at + Vector3.UP * 1.1, Vector3.UP)
+				print("armed: %s holding %s" % [
+					String(carrier.get("player_id")),
+					str(figure.call("describe").get("holding", "")) if figure != null else "no figure",
+				])
 		"showdown":
 			var middle := game.arena.showdown_centre()
 			camera.global_position = middle + Vector3(

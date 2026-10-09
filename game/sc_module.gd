@@ -449,8 +449,18 @@ func _wire_armed(world: ScGame) -> void:
 	if bridge == null:
 		return
 
+	# [b]Every weapon dealt, the selected one first[/b], rather than only the one the game's
+	# signal names: a watcher draws the gun in somebody's hand from the slot the snapshot
+	# says is out, and a slot names a weapon only among the ones that player was dealt.
 	world.player_armed.connect(func(player_id: StringName, weapon_id: StringName) -> void:
 		bridge.call("announce_armed", player_id, weapon_id)
+		var armed: Variant = world.players.get(player_id)
+		if armed == null or armed.weapons == null or armed.weapons.arsenal == null:
+			return
+		for slot in armed.weapons.arsenal.slots():
+			var held = armed.weapons.arsenal.slot_at(slot)
+			if held != null and held.def != null and held.def.id != weapon_id:
+				bridge.call("announce_armed", player_id, held.def.id)
 	)
 
 
