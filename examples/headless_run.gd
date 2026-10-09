@@ -6,6 +6,7 @@ const ScCannon := preload("../game/sc_cannon.gd")
 const ScConfig := preload("../game/sc_config.gd")
 const ScContent := preload("../game/sc_content.gd")
 const ScCopter := preload("../game/sc_copter.gd")
+const ScFigure := preload("../game/sc_figure.gd")
 const ScGame := preload("../game/sc_game.gd")
 const ScHud := preload("../game/sc_hud.gd")
 const ScLayouts := preload("../game/sc_layouts.gd")
@@ -35,7 +36,7 @@ const ScSpectate := preload("../game/sc_spectate.gd")
 ## `set_physics_process(false)` goes on first and every section advances the world itself.
 
 ## Sections entered, against sections that ran to their last line.
-const SECTIONS := 35
+const SECTIONS := 36
 
 ## And the total this counter cannot be.
 ##
@@ -43,7 +44,7 @@ const SECTIONS := 35
 ## checks that already ran still print ok, the ones after it never happen, and the section
 ## counter is satisfied because the section announced itself on the way in. dot-settings
 ## reported "8 sections, 63 passed, 0 failed" and exited 0 with eight checks missing.
-const CHECKS := 260
+const CHECKS := 262
 
 const TICK_RATE := 64
 const TICK := 1.0 / float(TICK_RATE)
@@ -109,6 +110,7 @@ func _run() -> void:
 	await _test_somebody_out_watches()
 	await _test_the_game_makes_a_noise()
 	await _test_what_a_player_keeps()
+	await _test_a_swing_is_drawn()
 
 	for world in _worlds.duplicate():
 		await _dispose(world)
@@ -2985,6 +2987,37 @@ func _prop_scenes() -> PackedStringArray:
 
 
 # --- The harness ------------------------------------------------------------
+
+## A watched melee swing is the kit's swing on the right arm, not a pistol's kick: the arm
+## leaves the hold pose for the clip's length and comes back to it.
+func _test_a_swing_is_drawn() -> void:
+	_section("a watched melee swing is drawn as a swing")
+	var figure := ScFigure.new()
+	add_child(figure)
+	figure.build(1.8, str(ScFigure.ATLASES[0]), Color.WHITE)
+	figure.hold(&"knife", false)
+	var arm: Node3D = figure.find_child("arm-right", true, false)
+	figure.pose(Vector3.ZERO, 0.0, 0.0)
+	await get_tree().process_frame
+	figure.pose(Vector3.ZERO, 0.0, 0.0)
+	var held_at := arm.rotation if arm != null else Vector3.ZERO
+
+	figure.fired(1, ZeeWeaponNet.KIND_SWING)
+	var furthest := 0.0
+	for i in 40:
+		await get_tree().process_frame
+		figure.pose(Vector3.ZERO, 0.0, 0.0)
+		furthest = maxf(furthest, arm.rotation.distance_to(held_at))
+	_check(furthest > 0.5, "the arm swings away from the hold", "%.2f rad at most" % furthest)
+
+	for i in 60:
+		await get_tree().process_frame
+		figure.pose(Vector3.ZERO, 0.0, 0.0)
+	_check(arm.rotation.distance_to(held_at) < 0.01 and not bool(figure.describe()["swinging"]),
+		"and comes back to it when the swing is over")
+	figure.queue_free()
+	_finished()
+
 
 func _section(name: String) -> void:
 	_sections_entered += 1

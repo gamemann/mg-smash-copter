@@ -64,7 +64,7 @@ assets/kenney/      eight CC0 models and two atlases
 assets/{blaster-kit,melee,arms}/  the weapon pack's own art, vendored
 textures/prototype/ six CC0 prototype textures, one per role
 scenes/             sc_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (260), dedicated (82), headless_net (208)
+examples/           headless_run (262), dedicated (82), headless_net (208)
 tools/              shot.gd/.tscn/.sh — render a frame and look at it; any --sc-* is config
                     net_shot.gd/.tscn — `shot.sh --view=walk`: a CONNECTED client running,
                     rendered and measured (key to motion, corrections, eye speed per frame)
@@ -375,7 +375,7 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 35 sections, 260 checks
+godot --headless --path . res://examples/headless_run.tscn   # 36 sections, 262 checks
 godot --headless --path . res://examples/dedicated.tscn      # 11 sections, 82 checks
 godot --headless --path . res://examples/headless_net.tscn   # 21 sections, 208 checks
 tools/shot.sh --view=field
@@ -425,8 +425,12 @@ godot --headless --path ../mg-smash-copter --import   # form five: a pack cannot
 
 `headless_net`'s "a weapon crosses" now checks that the client's copy of an armed player, drawn as a watcher draws it, holds the server's current weapon at the end of `arm-right` (armed by looking up the wrong slot: it fails). Rendered with `tools/shot.sh --view=armed --sc-survival-seconds=10 --seconds=12`: three stand-ins in the corners, arms out, guns forward.
 
+## A watched swing is a swing (2026-10-08)
+
+A melee use (`ZeeWeaponNet.KIND_SWING` on the counter) used to be a pistol's kick on a knife held out at arm's length. `ScFigure.fired` now starts a swing, and `pose()` samples the kit's `attack-melee-right` clip's rotation track for `arm-right` alone over the hold for the clip's length, so the legs keep their own clip under it. `headless_run`'s "a watched melee swing is drawn as a swing" (armed: never started, it reads 0.00 rad).
+
 ## Still to do
 
 In the order they are worth doing.
 
-1. **The view model's swing for melee.** A watched knife is held out like a pistol; the kit's `attack-melee-right` clip is there to play on a swing, and the counter already says which kind of use it was.
+Nothing here that is this repository's to do; publishing a new pack is the owner's (rebuild the shell first: dot-weapon 4d543f7 and zee-dot-weapons 0cc81e0 are in it).
